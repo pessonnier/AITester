@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Tester</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+  <header><h1>AI Tester</h1><p>Diagnostic GPU AMD et Ollama</p></header>
+  <main>
+    <button id="refresh" type="button">Actualiser le diagnostic</button>
+    <section class="grid">
+      <article><h2>GPU AMD</h2><div id="gpu" class="status">Chargement…</div></article>
+      <article><h2>Ollama</h2><div id="ollama" class="status">Chargement…</div></article>
+    </section>
+    <section>
+      <h2>Test d’inférence Ollama</h2>
+      <form id="prompt-form">
+        <label>Modèle <select id="model" required><option value="">Aucun modèle détecté</option></select></label>
+        <label>Prompt <textarea id="prompt" required>Réponds uniquement par « opérationnel ».</textarea></label>
+        <button type="submit">Tester le modèle</button>
+      </form>
+      <pre id="response">En attente d’un test.</pre>
+    </section>
+  </main>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

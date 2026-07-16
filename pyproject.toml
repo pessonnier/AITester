@@ -1,0 +1,14 @@
+[project]
+name = "ai-tester"
+version = "0.1.0"
+description = "Web dashboard for AMD GPU and Ollama diagnostics"
+requires-python = ">=3.11"
+dependencies = ["flask>=3.1,<4"]
+
+[dependency-groups]
+dev = ["pytest>=8,<9"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q"
