@@ -13,7 +13,7 @@ async function refresh() {
   const data = await response.json();
   const devices = data.gpu.devices || [];
   state(gpuBox, data.gpu.available,
-    devices.length ? devices.map(g => `<div><strong>${g.name}</strong> (${g.id}) — ${g.temperature_c ?? '?'} °C, charge ${g.utilization_percent ?? '?'} %</div>`).join('') : 'Aucun GPU détecté',
+    devices.length ? devices.map(g => `<div><strong>${g.name}</strong> [${g.vendor || 'GPU'}:${g.id}] — ${g.temperature_c ?? '?'} °C, charge ${g.utilization_percent ?? '?'} %</div>`).join('') : 'Aucun GPU détecté',
     data.gpu.error);
 
   const models = data.ollama.models || [];

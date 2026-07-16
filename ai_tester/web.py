@@ -6,13 +6,13 @@ import os
 
 from flask import Flask, jsonify, render_template, request
 
-from .gpu import GpuProbe, GpuProbeError
+from .gpu import GpuProbeError, SystemGpuProbe
 from .ollama import OllamaClient, OllamaError
 
 
 def create_app(*, gpu_probe=None, ollama_client=None) -> Flask:
     app = Flask(__name__)
-    gpu = gpu_probe or GpuProbe()
+    gpu = gpu_probe or SystemGpuProbe()
     ollama = ollama_client or OllamaClient(
         os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
     )

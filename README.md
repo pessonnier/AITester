@@ -1,12 +1,12 @@
 # AI Tester
 
-Tableau de bord web pour diagnostiquer les GPU AMD avec `rocm-smi`, vérifier un serveur Ollama, lister ses modèles et exécuter un prompt de contrôle.
+Tableau de bord web pour diagnostiquer les GPU AMD avec `rocm-smi` et NVIDIA avec `nvidia-smi`, vérifier un serveur Ollama, lister ses modèles et exécuter un prompt de contrôle.
 
 > Ce projet est distinct de **SentinelleFonctionnelle**, dont le rôle est de générer des tests fonctionnels à l’aide d’un LLM.
 
 ## Fonctions disponibles
 
-- diagnostic GPU AMD : modèle, charge, température et VRAM ;
+- diagnostic GPU AMD et NVIDIA : constructeur, modèle, charge, température et VRAM ;
 - interrogation de `GET /api/tags` sur Ollama ;
 - prompt de test via `POST /api/generate` ;
 - erreurs indépendantes : Ollama peut être testé même si le GPU n’est pas visible, et inversement ;
@@ -59,6 +59,16 @@ docker run --device=/dev/kfd --device=/dev/dri \
 ```
 
 Le montage exact dépend de l’image ROCm, des groupes et des permissions de l’hôte.
+
+## Accès GPU NVIDIA depuis un conteneur
+
+AI Tester interroge les cartes NVIDIA avec `nvidia-smi`. Le NVIDIA Container Toolkit doit être configuré sur l’hôte, puis les GPU exposés au conteneur, par exemple avec :
+
+```bash
+docker run --gpus all -p 5000:5000 ai-tester
+```
+
+L’absence d’un constructeur n’empêche pas le diagnostic de l’autre : une machine AMD n’a pas besoin de `nvidia-smi`, et inversement.
 
 ## Tests
 

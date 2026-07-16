@@ -25,7 +25,7 @@ def test_dashboard_identifies_ai_tester():
 
     assert response.status_code == 200
     assert b"AI Tester" in response.data
-    assert b"GPU AMD" in response.data
+    assert b"GPU AMD et NVIDIA" in response.data
     assert b"Ollama" in response.data
 
 
