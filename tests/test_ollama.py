@@ -21,7 +21,7 @@ class FakeResponse:
 
 
 def test_list_models_returns_normalized_models():
-    def transport(request, timeout):
+    def transport(request, *, timeout):
         assert request.full_url == "http://ollama:11434/api/tags"
         assert timeout == 2.5
         return FakeResponse({
@@ -40,7 +40,7 @@ def test_list_models_returns_normalized_models():
 
 
 def test_list_models_reports_connection_failure():
-    def failing_transport(request, timeout):
+    def failing_transport(request, *, timeout):
         raise URLError("connection refused")
 
     client = OllamaClient("http://ollama:11434", transport=failing_transport)
@@ -52,7 +52,7 @@ def test_list_models_reports_connection_failure():
 def test_generate_sends_model_and_prompt():
     captured = {}
 
-    def transport(request, timeout):
+    def transport(request, *, timeout):
         captured["url"] = request.full_url
         captured["body"] = json.loads(request.data)
         return FakeResponse({"response": "GPU opérationnel", "done": True})

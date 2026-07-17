@@ -40,7 +40,7 @@ class OllamaClient:
             headers={"Content-Type": "application/json"} if data else {},
         )
         try:
-            with self._transport(request, self.timeout) as response:
+            with self._transport(request, timeout=self.timeout) as response:
                 body = json.loads(response.read())
         except (URLError, TimeoutError, ConnectionError) as exc:
             raise OllamaConnectionError(f"Ollama inaccessible à {self.base_url}: {exc}") from exc

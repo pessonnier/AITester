@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
 </head>
 <body>
-  <header><h1>AI Tester</h1><p>Diagnostic GPU AMD et NVIDIA, et Ollama</p></header>
+  <header><h1>AI Tester</h1><p>Diagnostic GPU AMD et NVIDIA, Ollama et API OpenAI-compatible</p></header>
   <main>
     <button id="refresh" type="button">Actualiser le diagnostic</button>
     <section class="grid">
@@ -15,10 +15,52 @@
       <article><h2>Ollama</h2><div id="ollama" class="status">Chargement…</div></article>
     </section>
     <section>
-      <h2>Test d’inférence Ollama</h2>
+      <h2>Test d’inférence LLM</h2>
       <form id="prompt-form">
-        <label>Modèle <select id="model" required><option value="">Aucun modèle détecté</option></select></label>
-        <label>Prompt <textarea id="prompt" required>Réponds uniquement par « opérationnel ».</textarea></label>
+        <label>Fournisseur
+          <select id="provider" required>
+            <option value="ollama">Ollama natif</option>
+            <option value="openai">OpenAI / API compatible OpenAI</option>
+          </select>
+        </label>
+
+        <fieldset id="openai-config" hidden>
+          <legend>Connexion OpenAI-compatible</legend>
+          <label>URL de base
+            <input id="openai-base-url" type="url" maxlength="2048" value="https://api.openai.com/v1" placeholder="https://api.openai.com/v1">
+          </label>
+          <label>Clé API
+            <input id="openai-api-key" type="password" maxlength="8192" autocomplete="off" placeholder="sk-… (facultative pour une API locale)">
+          </label>
+          <button id="load-openai-models" type="button">Charger les modèles</button>
+          <span id="openai-model-status" class="hint">La clé n’est pas enregistrée. Un nouveau domaine devra être confirmé avant d’être ajouté aux destinations autorisées.</span>
+        </fieldset>
+
+        <label>Modèle
+          <select id="model" required><option value="">Aucun modèle détecté</option></select>
+        </label>
+
+        <fieldset id="openai-parameters" hidden>
+          <legend>Paramètres de génération</legend>
+          <label>Instruction système
+            <textarea id="system-prompt" maxlength="16384" placeholder="Tu es un assistant de diagnostic."></textarea>
+          </label>
+          <div class="parameter-grid">
+            <label>Température
+              <input id="temperature" type="number" min="0" max="2" step="0.05" value="0.7">
+            </label>
+            <label>Top P
+              <input id="top-p" type="number" min="0" max="1" step="0.05" value="1">
+            </label>
+            <label>Nombre maximal de tokens
+              <input id="max-tokens" type="number" min="1" max="1000000" step="1" value="512">
+            </label>
+          </div>
+        </fieldset>
+
+        <label>Prompt
+          <textarea id="prompt" maxlength="32768" required>Réponds uniquement par « opérationnel ».</textarea>
+        </label>
         <button type="submit">Tester le modèle</button>
       </form>
       <pre id="response">En attente d’un test.</pre>

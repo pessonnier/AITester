@@ -1,6 +1,6 @@
 # AI Tester
 
-Tableau de bord web pour diagnostiquer les GPU AMD avec `rocm-smi` et NVIDIA avec `nvidia-smi`, vérifier un serveur Ollama, lister ses modèles et exécuter un prompt de contrôle.
+Tableau de bord web pour diagnostiquer les GPU AMD avec `rocm-smi` et NVIDIA avec `nvidia-smi`, vérifier un serveur Ollama et tester une API OpenAI-compatible.
 
 > Ce projet est distinct de **SentinelleFonctionnelle**, dont le rôle est de générer des tests fonctionnels à l’aide d’un LLM.
 
@@ -9,6 +9,9 @@ Tableau de bord web pour diagnostiquer les GPU AMD avec `rocm-smi` et NVIDIA ave
 - diagnostic GPU AMD et NVIDIA : constructeur, modèle, charge, température et VRAM ;
 - interrogation de `GET /api/tags` sur Ollama ;
 - prompt de test via `POST /api/generate` ;
+- configuration d’une API OpenAI ou compatible OpenAI depuis l’interface ;
+- récupération et sélection des modèles exposés par `/v1/models` ;
+- test de `/v1/chat/completions` avec instruction système, température, `top_p` et limite de tokens ;
 - erreurs indépendantes : Ollama peut être testé même si le GPU n’est pas visible, et inversement ;
 - interface web responsive et API JSON.
 
@@ -46,6 +49,44 @@ Sous Linux, ajouter si nécessaire :
 
 Ollama doit écouter sur une adresse joignable depuis AI Tester. Vérifier la politique réseau et ne pas exposer son API sans protection sur Internet.
 
+## Configuration OpenAI-compatible
+
+Dans **Test d’inférence LLM**, sélectionner **OpenAI / API compatible OpenAI**, puis renseigner :
+
+- l’URL de base, par exemple `https://api.openai.com/v1` ;
+- la clé API, obligatoire pour OpenAI et facultative pour certaines API locales ;
+- le modèle chargé depuis l’endpoint `/models` ;
+- l’instruction système ;
+- `temperature` entre 0 et 2 ;
+- `top_p` entre 0 et 1 ;
+- `max_tokens`, entier strictement positif.
+
+La clé est transmise au backend uniquement pour la requête courante. AI Tester ne l’écrit pas sur disque et ne la renvoie pas au navigateur. Une instance partagée doit être placée derrière une authentification : la confirmation d’un domaine modifie une configuration serveur et doit donc rester réservée à un utilisateur de confiance.
+
+### Destinations autorisées
+
+La politique réseau est enregistrée dans `config/allowed_destinations.json`. Son emplacement peut être remplacé avec `AI_TESTER_ALLOWED_DESTINATIONS`. Le fichier contient deux listes :
+
+```json
+{
+  "allowed_hosts": ["api.openai.com", "localhost"],
+  "allowed_networks": [
+    "127.0.0.0/8",
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "::1/128",
+    "fc00::/7"
+  ]
+}
+```
+
+Les boucles locales, les réseaux privés IPv4 et les adresses IPv6 locales uniques sont donc autorisés par défaut. Les plages link-local, notamment `169.254.0.0/16` qui peut contenir un service de métadonnées cloud, ne le sont pas automatiquement.
+
+Lorsqu’une URL utilise un autre domaine public, le backend renvoie une demande de confirmation avec le nom et les adresses résolues. L’interface demande alors une confirmation explicite. Si elle est acceptée, le nom normalisé est ajouté atomiquement à `allowed_hosts`, puis l’appel est retenté. Les jokers sont interdits et aucune clé API n’est écrite dans ce fichier.
+
+Les redirections HTTP restent désactivées. Une clé API ne peut être envoyée qu’en HTTPS ; HTTP sans clé reste possible pour une API locale compatible. L’autorisation explicite d’un domaine signifie que l’administrateur lui fait confiance, y compris si sa résolution DNS change. Pour une instance exposée, compléter cette politique par un pare-feu de sortie ou une passerelle LLM.
+
 ## Accès GPU AMD depuis un conteneur
 
 AI Tester exécute exclusivement `rocm-smi`. Le binaire et les périphériques ROCm doivent être visibles dans le conteneur. Exemple indicatif :
@@ -80,4 +121,7 @@ uv run --group dev pytest
 
 - `GET /` : tableau de bord ;
 - `GET /api/status` : état GPU et Ollama ;
-- `POST /api/ollama/generate` : corps JSON `{"model":"...", "prompt":"..."}`.
+- `POST /api/ollama/generate` : corps JSON `{"model":"...", "prompt":"..."}` ;
+- `POST /api/openai/models` : modèles d’une API OpenAI-compatible ;
+- `POST /api/openai/chat` : test de complétion configurable ;
+- `POST /api/openai/allowed-hosts` : ajout persistant d’un domaine après confirmation explicite.
