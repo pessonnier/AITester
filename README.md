@@ -28,24 +28,26 @@ Ouvrir <http://localhost:5000>.
 
 ## Configuration Ollama
 
-L’URL est configurable par variable d’environnement :
+Par défaut, AI Tester contacte Ollama sur la machine hôte depuis son conteneur :
 
-```bash
-OLLAMA_BASE_URL=http://127.0.0.1:11434 \
-  uv run flask --app ai_tester.web run --host 0.0.0.0 --port 5000
+```text
+http://host.docker.internal:11434
 ```
 
-Dans un conteneur Linux, `127.0.0.1` désigne le conteneur, pas l’hôte. Utiliser l’adresse de l’hôte ou un nom de service Docker, par exemple :
-
-```bash
-OLLAMA_BASE_URL=http://host.docker.internal:11434
-```
-
-Sous Linux, ajouter si nécessaire :
+Sous Linux, le conteneur doit être lancé avec :
 
 ```bash
 --add-host=host.docker.internal:host-gateway
 ```
+
+L’URL reste configurable avec `OLLAMA_BASE_URL`. Par exemple, si Ollama partage un réseau Docker avec AI Tester sous le nom de service `ollama` :
+
+```bash
+OLLAMA_BASE_URL=http://ollama:11434 \
+  uv run flask --app ai_tester.web run --host 0.0.0.0 --port 5000
+```
+
+Dans un conteneur, `127.0.0.1` désigne le conteneur lui-même et ne permet donc pas de joindre Ollama sur l’hôte.
 
 Ollama doit écouter sur une adresse joignable depuis AI Tester. Vérifier la politique réseau et ne pas exposer son API sans protection sur Internet.
 

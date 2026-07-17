@@ -23,7 +23,7 @@ class OllamaResponseError(OllamaError):
 class OllamaClient:
     def __init__(
         self,
-        base_url: str = "http://127.0.0.1:11434",
+        base_url: str = "http://host.docker.internal:11434",
         *,
         timeout: float = 10.0,
         transport: Callable = urlopen,

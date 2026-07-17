@@ -23,6 +23,36 @@ def client():
     return app.test_client()
 
 
+def test_default_ollama_url_targets_the_docker_host(monkeypatch):
+    captured = {}
+
+    def factory(base_url):
+        captured["base_url"] = base_url
+        return FakeOllama()
+
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    monkeypatch.setattr("ai_tester.web.OllamaClient", factory)
+
+    create_app(gpu_probe=FakeGpuProbe())
+
+    assert captured["base_url"] == "http://host.docker.internal:11434"
+
+
+def test_ollama_url_can_be_overridden_with_environment(monkeypatch):
+    captured = {}
+
+    def factory(base_url):
+        captured["base_url"] = base_url
+        return FakeOllama()
+
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama:11434")
+    monkeypatch.setattr("ai_tester.web.OllamaClient", factory)
+
+    create_app(gpu_probe=FakeGpuProbe())
+
+    assert captured["base_url"] == "http://ollama:11434"
+
+
 def test_dashboard_identifies_ai_tester():
     response = client().get("/")
 

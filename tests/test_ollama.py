@@ -20,6 +20,10 @@ class FakeResponse:
         return json.dumps(self.payload).encode()
 
 
+def test_default_url_targets_the_docker_host():
+    assert OllamaClient().base_url == "http://host.docker.internal:11434"
+
+
 def test_list_models_returns_normalized_models():
     def transport(request, *, timeout):
         assert request.full_url == "http://ollama:11434/api/tags"

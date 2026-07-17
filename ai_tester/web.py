@@ -41,7 +41,7 @@ def create_app(
     app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BYTES
     gpu = gpu_probe or SystemGpuProbe()
     ollama = ollama_client or OllamaClient(
-        os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+        os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434")
     )
     policy = destination_policy or DestinationPolicy()
     if openai_client_factory is None:
