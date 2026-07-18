@@ -1,7 +1,10 @@
 {
   "allowed_hosts": [
     "api.openai.com",
-    "localhost"
+    "host.containers.internal",
+    "host.docker.internal",
+    "localhost",
+    "ollama"
   ],
   "allowed_networks": [
     "127.0.0.0/8",

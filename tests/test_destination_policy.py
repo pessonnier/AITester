@@ -34,6 +34,9 @@ def test_missing_configuration_is_created_with_local_networks(tmp_path):
     assert policy.allowed_networks == DEFAULT_ALLOWED_NETWORKS
     assert "api.openai.com" in policy.allowed_hosts
     assert "localhost" in policy.allowed_hosts
+    assert "host.containers.internal" in policy.allowed_hosts
+    assert "host.docker.internal" in policy.allowed_hosts
+    assert "ollama" in policy.allowed_hosts
     assert json.loads(path.read_text())["allowed_networks"] == list(DEFAULT_ALLOWED_NETWORKS)
 
 

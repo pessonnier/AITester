@@ -24,6 +24,30 @@
           </select>
         </label>
 
+        <fieldset id="ollama-config">
+          <legend>Connexion Ollama</legend>
+          {% set ollama_presets = [
+            'http://host.containers.internal:11434',
+            'http://host.docker.internal:11434',
+            'http://ollama:11434',
+            'http://127.0.0.1:11434'
+          ] %}
+          <label>Environnement
+            <select id="ollama-endpoint-preset">
+              <option value="http://host.containers.internal:11434"{% if default_ollama_url == ollama_presets[0] %} selected{% endif %}>Podman — hôte</option>
+              <option value="http://host.docker.internal:11434"{% if default_ollama_url == ollama_presets[1] %} selected{% endif %}>Docker — hôte</option>
+              <option value="http://ollama:11434"{% if default_ollama_url == ollama_presets[2] %} selected{% endif %}>Réseau partagé — service ollama</option>
+              <option value="http://127.0.0.1:11434"{% if default_ollama_url == ollama_presets[3] %} selected{% endif %}>Local — boucle locale</option>
+              <option value="custom"{% if default_ollama_url not in ollama_presets %} selected{% endif %}>URL personnalisée</option>
+            </select>
+          </label>
+          <label>URL Ollama
+            <input id="ollama-base-url" type="url" maxlength="2048" value="{{ default_ollama_url }}" placeholder="http://serveur-ollama:11434">
+          </label>
+          <button id="load-ollama-models" type="button">Charger les modèles</button>
+          <span id="ollama-model-status" class="hint">Le profil de démarrage est sélectionné. Une nouvelle destination personnalisée devra être confirmée.</span>
+        </fieldset>
+
         <fieldset id="openai-config" hidden>
           <legend>Connexion OpenAI-compatible</legend>
           <label>URL de base

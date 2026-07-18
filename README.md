@@ -28,26 +28,36 @@ Ouvrir <http://localhost:5000>.
 
 ## Configuration Ollama
 
-Par défaut, AI Tester contacte Ollama sur la machine hôte depuis son conteneur :
+Par défaut, AI Tester contacte Ollama sur la machine hôte depuis un conteneur Podman :
 
 ```text
-http://host.docker.internal:11434
+http://host.containers.internal:11434
 ```
 
-Sous Linux, le conteneur doit être lancé avec :
+Le tableau de bord permet de sélectionner directement :
+
+| Environnement | URL |
+|---|---|
+| Podman — hôte (défaut) | `http://host.containers.internal:11434` |
+| Docker — hôte | `http://host.docker.internal:11434` |
+| Réseau partagé | `http://ollama:11434` |
+| Boucle locale | `http://127.0.0.1:11434` |
+| Personnalisé | URL saisie dans l’interface |
+
+Sous Docker Linux, le conteneur doit généralement être lancé avec :
 
 ```bash
 --add-host=host.docker.internal:host-gateway
 ```
 
-L’URL reste configurable avec `OLLAMA_BASE_URL`. Par exemple, si Ollama partage un réseau Docker avec AI Tester sous le nom de service `ollama` :
+`OLLAMA_BASE_URL` permet également de remplacer le profil utilisé au démarrage :
 
 ```bash
 OLLAMA_BASE_URL=http://ollama:11434 \
   uv run flask --app ai_tester.web run --host 0.0.0.0 --port 5000
 ```
 
-Dans un conteneur, `127.0.0.1` désigne le conteneur lui-même et ne permet donc pas de joindre Ollama sur l’hôte.
+Une destination personnalisée inconnue doit être confirmée avant d’être ajoutée durablement aux destinations autorisées. Les redirections HTTP Ollama sont désactivées et les réponses sont limitées à 10 Mio. Dans un conteneur, `127.0.0.1` désigne le conteneur lui-même et ne joint l’hôte que si le réseau de l’hôte est explicitement partagé.
 
 Ollama doit écouter sur une adresse joignable depuis AI Tester. Vérifier la politique réseau et ne pas exposer son API sans protection sur Internet.
 
@@ -123,7 +133,9 @@ uv run --group dev pytest
 
 - `GET /` : tableau de bord ;
 - `GET /api/status` : état GPU et Ollama ;
-- `POST /api/ollama/generate` : corps JSON `{"model":"...", "prompt":"..."}` ;
+- `POST /api/ollama/models` : modèles de l’URL sélectionnée, corps JSON `{"base_url":"..."}` ;
+- `POST /api/ollama/generate` : corps JSON `{"base_url":"...", "model":"...", "prompt":"..."}` ;
 - `POST /api/openai/models` : modèles d’une API OpenAI-compatible ;
 - `POST /api/openai/chat` : test de complétion configurable ;
-- `POST /api/openai/allowed-hosts` : ajout persistant d’un domaine après confirmation explicite.
+- `POST /api/destinations/allowed-hosts` : ajout persistant d’un domaine après confirmation explicite ;
+- `POST /api/openai/allowed-hosts` : alias rétrocompatible de la route précédente.

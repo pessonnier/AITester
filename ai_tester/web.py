@@ -34,16 +34,26 @@ def create_app(
     *,
     gpu_probe=None,
     ollama_client=None,
+    ollama_client_factory=None,
     openai_client_factory=None,
     destination_policy=None,
 ) -> Flask:
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BYTES
     gpu = gpu_probe or SystemGpuProbe()
-    ollama = ollama_client or OllamaClient(
-        os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434")
-    )
     policy = destination_policy or DestinationPolicy()
+    default_ollama_url = os.getenv(
+        "OLLAMA_BASE_URL", "http://host.containers.internal:11434"
+    )
+    if ollama_client_factory is not None:
+        make_ollama_client = ollama_client_factory
+    elif ollama_client is not None:
+        make_ollama_client = lambda base_url: ollama_client
+    else:
+        make_ollama_client = lambda base_url: OllamaClient(
+            base_url, destination_policy=policy
+        )
+    ollama = ollama_client or OllamaClient(default_ollama_url)
     if openai_client_factory is None:
         def make_openai_client(base_url, *, api_key=""):
             return OpenAIClient(
@@ -62,7 +72,7 @@ def create_app(
 
     @app.get("/")
     def dashboard():
-        return render_template("index.html")
+        return render_template("index.html", default_ollama_url=default_ollama_url)
 
     @app.get("/api/status")
     def status():
@@ -83,15 +93,48 @@ def create_app(
     @app.post("/api/ollama/generate")
     def generate():
         payload = request.get_json(silent=True) or {}
+        base_url = payload.get("base_url", default_ollama_url)
         model = payload.get("model")
         prompt = payload.get("prompt")
+        if not isinstance(base_url, str) or not base_url.strip():
+            return jsonify(error="Le champ base_url est obligatoire"), 400
         if not isinstance(model, str) or not model.strip() or not isinstance(prompt, str) or not prompt.strip():
             return jsonify(error="Les champs model et prompt sont obligatoires"), 400
+        oversized = _oversized_field(payload, "base_url", "model", "prompt")
+        if oversized:
+            return jsonify(error=f"Le champ {oversized} est trop long"), 400
         try:
-            response = ollama.generate(model.strip(), prompt.strip())
+            response = make_ollama_client(base_url.strip()).generate(
+                model.strip(), prompt.strip()
+            )
+        except HostConfirmationRequired as exc:
+            return confirmation_response(exc)
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
         except OllamaError as exc:
             return jsonify(error=str(exc)), 502
         return jsonify(response=response)
+
+    @app.post("/api/ollama/models")
+    def ollama_models():
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify(error="Le corps JSON doit être un objet"), 400
+        base_url = payload.get("base_url")
+        if not isinstance(base_url, str) or not base_url.strip():
+            return jsonify(error="Le champ base_url est obligatoire"), 400
+        oversized = _oversized_field(payload, "base_url")
+        if oversized:
+            return jsonify(error=f"Le champ {oversized} est trop long"), 400
+        try:
+            models = make_ollama_client(base_url.strip()).list_models()
+        except HostConfirmationRequired as exc:
+            return confirmation_response(exc)
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+        except OllamaError as exc:
+            return jsonify(error=str(exc)), 502
+        return jsonify(models=models)
 
     @app.post("/api/openai/models")
     def openai_models():
@@ -175,8 +218,9 @@ def create_app(
             return jsonify(error=str(exc)), 502
         return jsonify(response=response)
 
+    @app.post("/api/destinations/allowed-hosts")
     @app.post("/api/openai/allowed-hosts")
-    def add_openai_allowed_host():
+    def add_allowed_host():
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
             return jsonify(error="Le corps JSON doit être un objet"), 400

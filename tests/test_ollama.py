@@ -1,9 +1,17 @@
 import json
+import socket
 from urllib.error import URLError
 
 import pytest
 
-from ai_tester.ollama import OllamaClient, OllamaConnectionError
+from ai_tester.destination_policy import DestinationPolicy, HostConfirmationRequired
+from ai_tester.ollama import (
+    MAX_OLLAMA_RESPONSE_BYTES,
+    OllamaClient,
+    OllamaConnectionError,
+    OllamaResponseError,
+    _NoRedirectHandler,
+)
 
 
 class FakeResponse:
@@ -16,12 +24,51 @@ class FakeResponse:
     def __exit__(self, *_):
         return False
 
-    def read(self):
+    def read(self, _limit=None):
         return json.dumps(self.payload).encode()
 
 
-def test_default_url_targets_the_docker_host():
-    assert OllamaClient().base_url == "http://host.docker.internal:11434"
+def test_default_url_targets_the_podman_host():
+    assert OllamaClient().base_url == "http://host.containers.internal:11434"
+
+
+def test_unknown_ollama_domain_requires_confirmation(tmp_path):
+    policy = DestinationPolicy(tmp_path / "allowed.json")
+
+    with pytest.raises(HostConfirmationRequired) as error:
+        OllamaClient(
+            "http://llm.example.net:11434",
+            destination_policy=policy,
+            resolver=lambda host, port, **kwargs: [
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("203.0.113.20", port))
+            ],
+        )
+
+    assert error.value.host == "llm.example.net"
+
+
+def test_invalid_ollama_url_is_rejected(tmp_path):
+    policy = DestinationPolicy(tmp_path / "allowed.json")
+
+    with pytest.raises(ValueError, match="URL Ollama invalide"):
+        OllamaClient("file:///etc/passwd", destination_policy=policy)
+
+
+def test_ollama_redirects_are_disabled():
+    handler = _NoRedirectHandler()
+
+    assert handler.redirect_request(None, None, 302, "Found", {}, "http://169.254.169.254") is None
+
+
+def test_oversized_ollama_response_is_rejected():
+    class OversizedResponse(FakeResponse):
+        def read(self, _limit=None):
+            return b"x" * (MAX_OLLAMA_RESPONSE_BYTES + 1)
+
+    client = OllamaClient(transport=lambda request, timeout: OversizedResponse({}))
+
+    with pytest.raises(OllamaResponseError, match="trop volumineuse"):
+        client.list_models()
 
 
 def test_list_models_returns_normalized_models():

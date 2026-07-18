@@ -21,7 +21,13 @@ DEFAULT_ALLOWED_NETWORKS = (
     "::1/128",
     "fc00::/7",
 )
-DEFAULT_ALLOWED_HOSTS = ("api.openai.com", "localhost")
+DEFAULT_ALLOWED_HOSTS = (
+    "api.openai.com",
+    "host.containers.internal",
+    "host.docker.internal",
+    "localhost",
+    "ollama",
+)
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "allowed_destinations.json"
 _HOST_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 _WRITE_LOCK = threading.RLock()

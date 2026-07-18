@@ -3,6 +3,10 @@ const ollamaBox = document.querySelector('#ollama');
 const providerSelect = document.querySelector('#provider');
 const modelSelect = document.querySelector('#model');
 const responseBox = document.querySelector('#response');
+const ollamaConfig = document.querySelector('#ollama-config');
+const ollamaEndpointPreset = document.querySelector('#ollama-endpoint-preset');
+const ollamaBaseUrl = document.querySelector('#ollama-base-url');
+const ollamaModelStatus = document.querySelector('#ollama-model-status');
 const openaiConfig = document.querySelector('#openai-config');
 const openaiParameters = document.querySelector('#openai-parameters');
 const openaiModelStatus = document.querySelector('#openai-model-status');
@@ -30,6 +34,7 @@ function setModels(models, emptyLabel = 'Aucun modèle détecté') {
 
 function applyProvider() {
   const isOpenAI = providerSelect.value === 'openai';
+  ollamaConfig.hidden = isOpenAI;
   openaiConfig.hidden = !isOpenAI;
   openaiParameters.hidden = !isOpenAI;
   if (isOpenAI) {
@@ -47,14 +52,10 @@ async function refresh() {
     devices.length ? devices.map(g => `<div><strong>${escapeHtml(g.name)}</strong> [${escapeHtml(g.vendor || 'GPU')}:${escapeHtml(g.id)}] — ${escapeHtml(g.temperature_c ?? '?')} °C, charge ${escapeHtml(g.utilization_percent ?? '?')} %</div>`).join('') : 'Aucun GPU détecté',
     data.gpu.error);
 
-  ollamaModels = (data.ollama.models || []).map(model => model.name);
-  state(ollamaBox, data.ollama.available,
-    ollamaModels.length ? ollamaModels.map(name => `<div><strong>${escapeHtml(name)}</strong></div>`).join('') : 'Serveur joignable, aucun modèle installé',
-    data.ollama.error);
-  if (providerSelect.value === 'ollama') setModels(ollamaModels);
+  await loadOllamaModels();
 }
 
-async function postOpenAI(route, payload, allowConfirmation = true) {
+async function postDestination(route, payload, allowConfirmation = true) {
   const response = await fetch(route, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -68,7 +69,7 @@ async function postOpenAI(route, payload, allowConfirmation = true) {
       'Voulez-vous l’ajouter durablement à la configuration des destinations autorisées ?'
     );
     if (!approved) throw new Error('Ajout du domaine refusé par l’utilisateur');
-    const authorization = await fetch('/api/openai/allowed-hosts', {
+    const authorization = await fetch('/api/destinations/allowed-hosts', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({host: data.host, confirmed: true})
@@ -77,16 +78,38 @@ async function postOpenAI(route, payload, allowConfirmation = true) {
     if (!authorization.ok) {
       throw new Error(authorizationData.error || `HTTP ${authorization.status}`);
     }
-    return postOpenAI(route, payload, false);
+    return postDestination(route, payload, false);
   }
   return {response, data};
+}
+
+async function loadOllamaModels() {
+  ollamaModelStatus.textContent = 'Chargement…';
+  if (providerSelect.value === 'ollama') setModels([], 'Chargement…');
+  try {
+    const {response, data} = await postDestination('/api/ollama/models', {
+      base_url: ollamaBaseUrl.value
+    });
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    ollamaModels = (data.models || []).map(model => model.name);
+    if (providerSelect.value === 'ollama') {
+      setModels(ollamaModels, 'Aucun modèle retourné');
+    }
+    state(ollamaBox, true,
+      ollamaModels.length ? ollamaModels.map(name => `<div><strong>${escapeHtml(name)}</strong></div>`).join('') : 'Serveur joignable, aucun modèle installé');
+    ollamaModelStatus.textContent = `${ollamaModels.length} modèle(s) disponible(s).`;
+  } catch (error) {
+    if (providerSelect.value === 'ollama') setModels([], 'Échec du chargement');
+    state(ollamaBox, false, '', error.message);
+    ollamaModelStatus.textContent = `Erreur : ${error.message}`;
+  }
 }
 
 async function loadOpenAIModels() {
   openaiModelStatus.textContent = 'Chargement…';
   setModels([], 'Chargement…');
   try {
-    const {response, data} = await postOpenAI('/api/openai/models', {
+    const {response, data} = await postDestination('/api/openai/models', {
       base_url: document.querySelector('#openai-base-url').value,
       api_key: document.querySelector('#openai-api-key').value
     });
@@ -100,7 +123,14 @@ async function loadOpenAIModels() {
 }
 
 providerSelect.addEventListener('change', applyProvider);
+ollamaEndpointPreset.addEventListener('change', () => {
+  const custom = ollamaEndpointPreset.value === 'custom';
+  ollamaBaseUrl.readOnly = !custom;
+  if (!custom) ollamaBaseUrl.value = ollamaEndpointPreset.value;
+  if (providerSelect.value === 'ollama') loadOllamaModels();
+});
 document.querySelector('#refresh').addEventListener('click', refresh);
+document.querySelector('#load-ollama-models').addEventListener('click', loadOllamaModels);
 document.querySelector('#load-openai-models').addEventListener('click', loadOpenAIModels);
 document.querySelector('#prompt-form').addEventListener('submit', async event => {
   event.preventDefault();
@@ -120,18 +150,11 @@ document.querySelector('#prompt-form').addEventListener('submit', async event =>
       top_p: Number(document.querySelector('#top-p').value),
       max_tokens: Number(document.querySelector('#max-tokens').value)
     });
+  } else {
+    payload.base_url = ollamaBaseUrl.value;
   }
   try {
-    const {response, data} = isOpenAI
-      ? await postOpenAI(route, payload)
-      : await (async () => {
-          const result = await fetch(route, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(payload)
-          });
-          return {response: result, data: await result.json()};
-        })();
+    const {response, data} = await postDestination(route, payload);
     responseBox.textContent = response.ok ? data.response : `Erreur : ${data.error}`;
   } catch (error) {
     responseBox.textContent = `Erreur réseau : ${error.message}`;
@@ -139,6 +162,7 @@ document.querySelector('#prompt-form').addEventListener('submit', async event =>
 });
 
 applyProvider();
+ollamaBaseUrl.readOnly = ollamaEndpointPreset.value !== 'custom';
 refresh().catch(error => {
   gpuBox.textContent = `Erreur réseau : ${error}`;
   ollamaBox.textContent = `Erreur réseau : ${error}`;

@@ -23,7 +23,7 @@ def client():
     return app.test_client()
 
 
-def test_default_ollama_url_targets_the_docker_host(monkeypatch):
+def test_default_ollama_url_targets_the_podman_host(monkeypatch):
     captured = {}
 
     def factory(base_url):
@@ -35,7 +35,7 @@ def test_default_ollama_url_targets_the_docker_host(monkeypatch):
 
     create_app(gpu_probe=FakeGpuProbe())
 
-    assert captured["base_url"] == "http://host.docker.internal:11434"
+    assert captured["base_url"] == "http://host.containers.internal:11434"
 
 
 def test_ollama_url_can_be_overridden_with_environment(monkeypatch):
@@ -51,6 +51,17 @@ def test_ollama_url_can_be_overridden_with_environment(monkeypatch):
     create_app(gpu_probe=FakeGpuProbe())
 
     assert captured["base_url"] == "http://ollama:11434"
+
+
+def test_ollama_environment_override_is_selected_in_dashboard(monkeypatch):
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama:11434")
+    app = create_app(gpu_probe=FakeGpuProbe(), ollama_client=FakeOllama())
+
+    response = app.test_client().get("/")
+
+    assert response.status_code == 200
+    assert b'<option value="http://ollama:11434" selected>' in response.data
+    assert b'value="http://ollama:11434" placeholder=' in response.data
 
 
 def test_dashboard_identifies_ai_tester():
@@ -79,12 +90,29 @@ def test_dashboard_exposes_openai_provider_and_generation_parameters():
         assert field_id in response.data
 
 
-def test_frontend_confirms_and_persists_unknown_openai_domain():
+def test_dashboard_exposes_ollama_podman_docker_and_custom_urls():
+    response = client().get("/")
+
+    assert response.status_code == 200
+    for value in (
+        b'id="ollama-endpoint-preset"',
+        b'id="ollama-base-url"',
+        b'id="load-ollama-models"',
+        b'http://host.containers.internal:11434',
+        b'http://host.docker.internal:11434',
+        b'http://ollama:11434',
+        b'http://127.0.0.1:11434',
+    ):
+        assert value in response.data
+
+
+def test_frontend_confirms_and_persists_unknown_destination():
     response = client().get("/static/app.js")
 
     assert response.status_code == 200
     assert b"window.confirm" in response.data
-    assert b"/api/openai/allowed-hosts" in response.data
+    assert b"/api/destinations/allowed-hosts" in response.data
+    assert b"await loadOllamaModels()" in response.data
 
 
 def test_status_combines_gpu_and_ollama_diagnostics():
@@ -112,6 +140,75 @@ def test_generate_returns_ollama_response():
 
     assert response.status_code == 200
     assert response.get_json() == {"response": "qwen3:8b: Diagnostic"}
+
+
+def test_ollama_models_uses_selected_url():
+    captured = {}
+
+    def factory(base_url):
+        captured["base_url"] = base_url
+        return FakeOllama()
+
+    app = create_app(
+        gpu_probe=FakeGpuProbe(),
+        ollama_client=FakeOllama(),
+        ollama_client_factory=factory,
+    )
+    response = app.test_client().post(
+        "/api/ollama/models",
+        json={"base_url": "http://host.containers.internal:11434"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "models": [{"name": "qwen3:8b", "size": 123, "modified_at": None}]
+    }
+    assert captured["base_url"] == "http://host.containers.internal:11434"
+
+
+def test_ollama_generate_uses_selected_url():
+    captured = {}
+
+    def factory(base_url):
+        captured["base_url"] = base_url
+        return FakeOllama()
+
+    app = create_app(
+        gpu_probe=FakeGpuProbe(),
+        ollama_client=FakeOllama(),
+        ollama_client_factory=factory,
+    )
+    response = app.test_client().post(
+        "/api/ollama/generate",
+        json={
+            "base_url": "http://host.docker.internal:11434",
+            "model": "qwen3:8b",
+            "prompt": "Diagnostic",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"response": "qwen3:8b: Diagnostic"}
+    assert captured["base_url"] == "http://host.docker.internal:11434"
+
+
+def test_unknown_ollama_domain_requests_confirmation():
+    def factory(base_url):
+        raise HostConfirmationRequired("ollama.example.net", ["203.0.113.20"])
+
+    app = create_app(
+        gpu_probe=FakeGpuProbe(),
+        ollama_client=FakeOllama(),
+        ollama_client_factory=factory,
+    )
+    response = app.test_client().post(
+        "/api/ollama/models",
+        json={"base_url": "http://ollama.example.net:11434"},
+    )
+
+    assert response.status_code == 403
+    assert response.get_json()["confirmation_required"] is True
+    assert response.get_json()["host"] == "ollama.example.net"
 
 
 class FakeOpenAI:
@@ -333,7 +430,11 @@ def test_unknown_openai_domain_requests_confirmation_without_exposing_key():
     assert "must-remain-secret" not in response.get_data(as_text=True)
 
 
-def test_confirmed_openai_domain_is_added_to_destination_configuration():
+@pytest.mark.parametrize(
+    "route",
+    ["/api/destinations/allowed-hosts", "/api/openai/allowed-hosts"],
+)
+def test_confirmed_domain_is_added_to_destination_configuration(route):
     captured = {}
 
     class Policy:
@@ -347,7 +448,7 @@ def test_confirmed_openai_domain_is_added_to_destination_configuration():
         destination_policy=Policy(),
     )
     response = app.test_client().post(
-        "/api/openai/allowed-hosts",
+        route,
         json={"host": "llm.example.net", "confirmed": True},
     )
 
