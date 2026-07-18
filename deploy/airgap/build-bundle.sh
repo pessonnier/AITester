@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 OUTPUT_DIR=${OUTPUT_DIR:-"${ROOT_DIR}/dist"}
 RUNTIME=${CONTAINER_RUNTIME:-}
 VERSION=${VERSION:-$(python3 -c 'import pathlib,sys,tomllib; print(tomllib.loads(pathlib.Path(sys.argv[1]).read_text())["project"]["version"])' "${ROOT_DIR}/pyproject.toml" 2>/dev/null || printf 'dev')}
-ARCH=${ARCH:-$(uname -m)}
+HOST_ARCH=$(uname -m)
+case "${HOST_ARCH}" in
+  x86_64|amd64) HOST_ARCH=x86_64 ;;
+  *) printf 'L’image ROCm GPU prend uniquement en charge x86_64/amd64.\n' >&2; exit 2 ;;
+esac
+ARCH=${ARCH:-${HOST_ARCH}}
+[[ ${ARCH} == amd64 ]] && ARCH=x86_64
 IMAGE_REF=${IMAGE_REF:-"ai-tester:${VERSION}"}
-PYTHON_IMAGE=${PYTHON_IMAGE:-"python:3.13.5-slim-bookworm@sha256:4c2cf9917bd1cbacc5e9b07320025bdb7cdf2df7b0ceaccb55e9dd7e30987419"}
+GPU_BASE_IMAGE=${GPU_BASE_IMAGE:-"rocm/dev-ubuntu-24.04:7.2.4@sha256:bdc8e61026cbb844ede93d44d2c50055f51ebb2041906b60182bf3bee3139054"}
 ARCHIVE_NAME="ai-tester-image-${VERSION}-${ARCH}.tar"
 BUNDLE_NAME="ai-tester-airgap-${VERSION}-${ARCH}.tar.gz"
 
@@ -19,8 +25,12 @@ if [[ ! ${IMAGE_REF} =~ ^[A-Za-z0-9][A-Za-z0-9._/:@-]*$ ]]; then
   printf 'IMAGE_REF invalide: %s\n' "${IMAGE_REF}" >&2
   exit 2
 fi
-if [[ ! ${PYTHON_IMAGE} =~ @sha256:[a-f0-9]{64}$ ]]; then
-  printf 'PYTHON_IMAGE doit être épinglée par digest sha256.\n' >&2
+if [[ ! ${GPU_BASE_IMAGE} =~ @sha256:[a-f0-9]{64}$ ]]; then
+  printf 'GPU_BASE_IMAGE doit être épinglée par digest sha256.\n' >&2
+  exit 2
+fi
+if [[ ${ARCH} != "${HOST_ARCH}" ]]; then
+  printf 'ARCH=%s ne correspond pas à l’architecture hôte %s.\n' "${ARCH}" "${HOST_ARCH}" >&2
   exit 2
 fi
 
@@ -65,12 +75,28 @@ mkdir -p "${BUNDLE_DIR}"
 
 printf 'Construction de %s avec %s...\n' "${IMAGE_REF}" "${RUNTIME}"
 "${RUNTIME}" build \
-  --build-arg "PYTHON_IMAGE=${PYTHON_IMAGE}" \
+  --build-arg "GPU_BASE_IMAGE=${GPU_BASE_IMAGE}" \
   --build-arg "SOURCE_COMMIT=${SOURCE_COMMIT}" \
   --build-arg "LOCK_SHA256=${LOCK_SHA256}" \
   --file "${ROOT_DIR}/Containerfile" \
   --tag "${IMAGE_REF}" \
   "${ROOT_DIR}"
+
+IMAGE_METADATA=$("${RUNTIME}" image inspect --format '{{.Architecture}} {{.Id}}' "${IMAGE_REF}") || {
+  printf 'Impossible d’inspecter l’image construite.\n' >&2
+  exit 1
+}
+read -r IMAGE_ARCH IMAGE_ID <<< "${IMAGE_METADATA}"
+[[ ${IMAGE_ARCH} == amd64 ]] && IMAGE_ARCH=x86_64
+[[ ${IMAGE_ID} =~ ^[a-f0-9]{64}$ ]] && IMAGE_ID="sha256:${IMAGE_ID}"
+[[ ${IMAGE_ARCH} == "${ARCH}" ]] || {
+  printf 'Architecture image inattendue: %s (attendu: %s).\n' "${IMAGE_ARCH}" "${ARCH}" >&2
+  exit 1
+}
+[[ ${IMAGE_ID} =~ ^sha256:[a-f0-9]{64}$ ]] || {
+  printf 'Identifiant image invalide: %s\n' "${IMAGE_ID}" >&2
+  exit 1
+}
 
 printf 'Export de l’image...\n'
 if [[ ${RUNTIME} == podman ]]; then
@@ -82,8 +108,8 @@ fi
 cp "${ROOT_DIR}/deploy/airgap/install.sh" "${BUNDLE_DIR}/install.sh"
 cp "${ROOT_DIR}/deploy/airgap/requirements.lock" "${BUNDLE_DIR}/requirements.lock"
 chmod 0755 "${BUNDLE_DIR}/install.sh"
-printf 'IMAGE_REF=%s\nIMAGE_ARCHIVE=%s\nVERSION=%s\nARCH=%s\nPYTHON_IMAGE=%s\nLOCK_SHA256=%s\nSOURCE_COMMIT=%s\nSOURCE_DIRTY=%s\n' \
-  "${IMAGE_REF}" "${ARCHIVE_NAME}" "${VERSION}" "${ARCH}" "${PYTHON_IMAGE}" \
+printf 'IMAGE_REF=%s\nIMAGE_ID=%s\nIMAGE_ARCHIVE=%s\nVERSION=%s\nARCH=%s\nGPU_BASE_IMAGE=%s\nLOCK_SHA256=%s\nSOURCE_COMMIT=%s\nSOURCE_DIRTY=%s\n' \
+  "${IMAGE_REF}" "${IMAGE_ID}" "${ARCHIVE_NAME}" "${VERSION}" "${ARCH}" "${GPU_BASE_IMAGE}" \
   "${LOCK_SHA256}" "${SOURCE_COMMIT}" "${SOURCE_DIRTY}" > "${BUNDLE_DIR}/MANIFEST"
 (
   cd "${BUNDLE_DIR}"

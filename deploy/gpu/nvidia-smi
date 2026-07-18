@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# NVIDIA Container Toolkit injecte une version de nvidia-smi compatible avec
+# le pilote de l’hôte. Ce relais évite d’embarquer un utilitaire lié à une
+# version de pilote qui pourrait être incompatible.
+for candidate in \
+  /usr/bin/nvidia-smi \
+  /usr/lib/nvidia/current/nvidia-smi \
+  /usr/lib/wsl/lib/nvidia-smi
+do
+  if [[ -x ${candidate} ]]; then
+    exec "${candidate}" "$@"
+  fi
+done
+
+printf 'nvidia-smi n’a pas été injecté. Installez NVIDIA Container Toolkit sur l’hôte et démarrez avec --gpu nvidia.\n' >&2
+exit 127

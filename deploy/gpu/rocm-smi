@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+for candidate in \
+  /opt/rocm/bin/rocm-smi \
+  /opt/rocm-7.2.4/bin/rocm-smi
+do
+  if [[ -x ${candidate} ]]; then
+    exec "${candidate}" "$@"
+  fi
+done
+
+printf 'rocm-smi est absent de l’image ROCm. Reconstruction de l’image requise.\n' >&2
+exit 127

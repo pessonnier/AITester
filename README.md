@@ -111,7 +111,7 @@ Le chemin recommandé consiste à construire un bundle sur une machine connecté
 
 ### 1. Construire le bundle sur une machine connectée
 
-Prérequis : Git, `tar`, `sha256sum` et Podman ou Docker avec un accès Internet permettant de récupérer l’image Python et les dépendances.
+Prérequis : machine **x86_64**, Git, `tar`, `sha256sum` et Podman ou Docker avec un accès Internet permettant de récupérer l’image ROCm et les dépendances.
 
 ```bash
 git clone https://github.com/pessonnier/AITester.git
@@ -133,20 +133,20 @@ dist/ai-tester-airgap-0.1.0-x86_64.tar.gz
 
 Le constructeur exige un dépôt Git et refuse par défaut une arborescence modifiée. `ALLOW_DIRTY=1` permet un bundle de développement, marqué comme tel dans le manifeste, mais n’est pas recommandé pour une livraison contrôlée. La dérogation `ALLOW_UNVERSIONED=1` existe pour une archive source sans métadonnées Git, au prix d’une provenance incomplète.
 
-Pour imposer la référence de l’image ou une image Python déjà approuvée par l’organisation :
+Pour imposer la référence de l’image produite ou une base ROCm déjà approuvée par l’organisation :
 
 ```bash
 IMAGE_REF=registry.interne/ai-tester:0.1.0 \
-PYTHON_IMAGE=registry.interne/python:3.13.5-slim-bookworm@sha256:4c2cf9917bd1cbacc5e9b07320025bdb7cdf2df7b0ceaccb55e9dd7e30987419 \
+GPU_BASE_IMAGE=registry.interne/rocm/dev-ubuntu-24.04:7.2.4@sha256:<digest-approuvé> \
 CONTAINER_RUNTIME=podman \
 ./deploy/airgap/build-bundle.sh
 ```
 
-`PYTHON_IMAGE` doit obligatoirement être épinglée par digest SHA-256. Elle doit rester compatible avec l’image Debian Python prévue par le `Containerfile` et fournir Python, `pip`, `useradd` et `/usr/sbin/nologin`. Le manifeste enregistre la référence de base, le commit source, l’architecture et le hash du verrou de dépendances.
+`GPU_BASE_IMAGE` doit obligatoirement être épinglée par digest SHA-256 et fournir Python 3, `pip`, `useradd`, `/usr/sbin/nologin` et un `/opt/rocm/bin/rocm-smi` exécutable — ce dernier point est vérifié pendant le build. La base officielle par défaut fournit ROCm 7.2.4 via `rocm/dev-ubuntu-24.04:7.2.4`, épinglée par digest. Une base personnalisée relève de l’organisation et doit être qualifiée avec la version du pilote hôte. Le manifeste enregistre la référence de base, l’identifiant de l’image construite, le commit source, l’architecture inspectée et le hash du verrou de dépendances.
 
 ### 2. Transférer et installer dans la zone isolée
 
-Prérequis sur la cible : Linux, Bash, `tar`, `sha256sum` et Podman ou Docker déjà installés. Python, `uv` et un registre de conteneurs ne sont pas nécessaires sur la cible.
+Prérequis sur la cible : Linux x86_64, Bash, `tar`, `sha256sum` et Podman ou Docker déjà installés. Python, `uv` et un registre de conteneurs ne sont pas nécessaires sur la cible. Les pilotes GPU et, pour NVIDIA, le NVIDIA Container Toolkit doivent être préinstallés hors ligne sur l’hôte.
 
 Copier le bundle et son fichier `.sha256` par le canal autorisé. Si le modèle de menace l’exige, transmettre ou publier le checksum par un canal de confiance distinct. Sur la machine air-gapped, vérifier le bundle **avant extraction** :
 
@@ -159,12 +159,13 @@ cd ai-tester-airgap
 
 L’installateur :
 
-1. vérifie **avant chargement** tous les fichiers avec `SHA256SUMS` ;
-2. détecte Podman ou Docker ;
-3. charge l’archive d’image locale sans téléchargement ;
-4. crée le volume persistant `ai-tester-data` pour la politique des destinations ;
-5. démarre AI Tester avec les capacités supprimées, `no-new-privileges` et un système de fichiers racine en lecture seule ;
-6. vérifie son état de disponibilité.
+1. vérifie **avant chargement** tous les fichiers avec `SHA256SUMS` et refuse une architecture différente de la cible ;
+2. détecte Podman ou Docker et valide les prérequis GPU explicitement demandés ;
+3. charge l’archive locale avec `--pull=never`, puis compare l’identifiant de l’image chargée à celui du manifeste ;
+4. effectue un `create` de prévalidation avec les options GPU et de durcissement, sans arrêter le service existant ;
+5. crée ou réutilise le volume persistant `ai-tester-data` pour la politique des destinations ;
+6. remplace l’ancien conteneur uniquement après cette prévalidation, puis démarre AI Tester avec les capacités supprimées, `no-new-privileges` et une racine en lecture seule ;
+7. vérifie son état de disponibilité.
 
 Une fois le bundle transféré, aucun accès Internet ni registre de conteneurs n’est nécessaire et `--pull=never` interdit tout téléchargement implicite. Podman utilise par défaut `http://host.containers.internal:11434` et Docker `http://host.docker.internal:11434` avec l’entrée `host-gateway`.
 
@@ -191,33 +192,115 @@ Options utiles :
 
 Sans `--replace`, l’installateur refuse de supprimer un conteneur existant. Conserver le bundle précédent pour un retour arrière ; un remplacement provoque une brève interruption de service.
 
-Pour reproduire le transfert sur une architecture différente, construire un bundle distinct sur cette architecture ou avec une chaîne de construction multi-architecture validée. Ne pas réutiliser aveuglément une archive `x86_64` sur une cible ARM64.
+L’image GPU est distribuée uniquement pour **x86_64/amd64**, car la base ROCm officielle utilisée n’est pas multi-architecture. Il faut produire et qualifier une autre image de base avant tout support ARM64.
 
-L’image générique assure le tableau de bord et les tests Ollama/OpenAI. Pour les diagnostics GPU, le moteur de conteneurs et l’image doivent également exposer les périphériques, bibliothèques et commandes correspondantes : exclusivement `rocm-smi` pour AMD, ou `nvidia-smi` pour NVIDIA. Ces composants doivent eux-mêmes être prépositionnés dans l’environnement isolé ; l’installateur ne les télécharge pas.
+### Accès GPU AMD
 
-## Accès GPU AMD depuis un conteneur
+L’image contient réellement ROCm 7.2.4 et `rocm-smi`. Le pilote noyau AMD reste obligatoirement sur l’hôte : un conteneur partage le noyau de celui-ci et ne doit pas embarquer `amdgpu-dkms`.
 
-AI Tester exécute exclusivement `rocm-smi`. Le binaire et les périphériques ROCm doivent être visibles dans le conteneur. Exemple indicatif :
+Référence officielle : [exécution de conteneurs ROCm](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/how-to/docker.html). Consulter et archiver cette documentation depuis la machine connectée avant l’intervention en zone isolée.
 
-```bash
-docker run --device=/dev/kfd --device=/dev/dri \
-  --group-add video --group-add render \
-  -e OLLAMA_BASE_URL=http://host.docker.internal:11434 \
-  --add-host=host.docker.internal:host-gateway \
-  -p 127.0.0.1:5000:5000 ai-tester
-```
+Prérequis sur l’hôte isolé :
 
-Le montage exact dépend de l’image ROCm, des groupes et des permissions de l’hôte.
+- GPU pris en charge et pilote `amdgpu` opérationnel ;
+- périphériques `/dev/kfd` et `/dev/dri` présents ;
+- compte qui lance Podman membre des groupes donnant accès à ces périphériques, généralement `video` et `render` ;
+- paquets pilotes/ROCm hôtes préparés et installés hors ligne avant le transfert d’AI Tester.
 
-## Accès GPU NVIDIA depuis un conteneur
-
-AI Tester interroge les cartes NVIDIA avec `nvidia-smi`. Le NVIDIA Container Toolkit doit être configuré sur l’hôte, puis les GPU exposés au conteneur, par exemple avec :
+Vérifier les droits de l’hôte :
 
 ```bash
-docker run --gpus all -p 127.0.0.1:5000:5000 ai-tester
+ls -l /dev/kfd /dev/dri/renderD*
+id
 ```
 
-L’absence d’un constructeur n’empêche pas le diagnostic de l’autre : une machine AMD n’a pas besoin de `nvidia-smi`, et inversement.
+Démarrage AMD avec Podman, chemin recommandé :
+
+```bash
+./install.sh --runtime podman --gpu amd
+podman exec ai-tester rocm-smi
+```
+
+L’installateur ajoute de façon ciblée :
+
+```text
+--device=/dev/kfd
+--device=/dev/dri
+--group-add=keep-groups
+```
+
+`keep-groups` conserve les groupes supplémentaires de l’utilisateur hôte avec Podman rootless ; il nécessite un runtime OCI compatible, généralement `crun`. Sur un hôte SELinux en mode enforcing, `setsebool -P container_use_devices true` est parfois nécessaire, mais cette bascule autorise globalement l’accès des domaines conteneurs aux périphériques : elle doit être approuvée selon la politique de sécurité locale. Ne pas contourner SELinux avec `--privileged`.
+
+Démarrage AMD avec Docker :
+
+```bash
+./install.sh --runtime docker --gpu amd
+docker exec ai-tester rocm-smi
+```
+
+Pour Docker, l’installateur transmet `/dev/kfd` et `/dev/dri`, puis ajoute automatiquement les GID numériques propriétaires de `/dev/kfd` et des nœuds de périphérique DRI. Cela évite de supposer que les noms ou numéros des groupes `video` et `render` sont identiques dans l’image et sur l’hôte. Pour Podman comme Docker, l’installation refuse un périphérique appartenant au GID 0 ou dépourvu des bits de groupe lecture/écriture : corriger alors les règles `udev` ou les groupes de l’hôte plutôt que d’élargir les privilèges du conteneur.
+
+L’option `--privileged` n’est ni utilisée ni recommandée. L’option `seccomp=unconfined`, parfois indiquée pour certains workloads ROCm/HPC, n’est pas nécessaire au simple diagnostic `rocm-smi` et affaiblirait le durcissement par défaut.
+
+### Accès GPU NVIDIA
+
+L’image contient la commande relais `nvidia-smi`, mais **pas une copie figée du binaire du pilote NVIDIA**. NVIDIA Container Toolkit injecte au démarrage le vrai `/usr/bin/nvidia-smi`, les bibliothèques et les périphériques correspondant exactement au pilote installé sur l’hôte. Cette méthode évite les incompatibilités entre un utilitaire embarqué et le pilote noyau.
+
+Référence officielle : [prise en charge CDI de NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/cdi-support.html). Les paquets, leur intégrité et une copie de la procédure doivent être préparés sur la machine connectée ; ils ne font pas partie du bundle AI Tester.
+
+Prérequis sur l’hôte isolé :
+
+- pilote NVIDIA opérationnel et `nvidia-smi` fonctionnel sur l’hôte ;
+- NVIDIA Container Toolkit préinstallé avec ses paquets hors ligne ;
+- pour Podman, spécification CDI générée et visible par le moteur.
+
+Contrôles préalables :
+
+```bash
+nvidia-smi
+nvidia-ctk cdi list       # requis pour le chemin CDI Podman
+```
+
+Avec NVIDIA Container Toolkit 1.18 ou plus récent, `nvidia-cdi-refresh` génère normalement `/var/run/cdi/nvidia.yaml` après installation du toolkit, mise à jour du pilote ou redémarrage.
+
+Démarrage NVIDIA avec Podman/CDI :
+
+```bash
+./install.sh --runtime podman --gpu nvidia
+podman exec ai-tester nvidia-smi
+```
+
+L’installateur ajoute :
+
+```text
+--device=nvidia.com/gpu=all
+NVIDIA_DRIVER_CAPABILITIES=utility
+```
+
+Démarrage NVIDIA avec Docker :
+
+```bash
+./install.sh --runtime docker --gpu nvidia
+docker exec ai-tester nvidia-smi
+```
+
+L’installateur ajoute `--gpus=all` et la capacité NVIDIA `utility`. Docker doit avoir été configuré pour NVIDIA Container Toolkit avant le passage en zone isolée. Avant tout chargement ou remplacement, l’installateur vérifie que Docker annonce bien le runtime `nvidia`.
+
+### Sélection automatique et hôtes hybrides
+
+Par moindre privilège, le mode par défaut est `--gpu none` : aucun périphérique GPU n’est accordé sans choix explicite. Le mode `--gpu auto` active AMD lorsque `/dev/kfd` et `/dev/dri` existent et sont exploitables, puis NVIDIA lorsque `nvidia-smi -L` et l’intégration du runtime fonctionnent. Les choix sont :
+
+```bash
+./install.sh --gpu none       # aucun périphérique GPU
+./install.sh --gpu auto       # détecter et activer les GPU exploitables
+./install.sh --gpu amd        # AMD uniquement
+./install.sh --gpu nvidia     # NVIDIA uniquement
+./install.sh --gpu all        # AMD et NVIDIA sur un hôte hybride
+```
+
+Un choix explicite échoue avant le chargement ou le remplacement du conteneur si les périphériques AMD ou `nvidia-smi` sont absents de l’hôte. Les protections existantes restent actives : utilisateur non-root, capacités supprimées, `no-new-privileges`, racine en lecture seule et absence de `--privileged`.
+
+La présence d’une commande dans le conteneur ne prouve pas à elle seule que le GPU est accessible. La validation finale doit exécuter `rocm-smi` ou `nvidia-smi` avec `podman exec`/`docker exec` sur un hôte réellement équipé. Le bundle AI Tester contient l’espace utilisateur ROCm, mais n’installe jamais les pilotes noyau ni NVIDIA Container Toolkit sur la cible.
 
 ## Tests
 
