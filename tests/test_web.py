@@ -31,9 +31,11 @@ def test_default_ollama_url_targets_the_podman_host(monkeypatch):
         return FakeOllama()
 
     monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
-    monkeypatch.setattr("ai_tester.web.OllamaClient", factory)
 
-    create_app(gpu_probe=FakeGpuProbe())
+    app = create_app(gpu_probe=FakeGpuProbe(), ollama_client_factory=factory)
+    assert captured == {}
+
+    app.test_client().get("/api/status")
 
     assert captured["base_url"] == "http://host.containers.internal:11434"
 
@@ -46,11 +48,54 @@ def test_ollama_url_can_be_overridden_with_environment(monkeypatch):
         return FakeOllama()
 
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama:11434")
-    monkeypatch.setattr("ai_tester.web.OllamaClient", factory)
 
-    create_app(gpu_probe=FakeGpuProbe())
+    app = create_app(gpu_probe=FakeGpuProbe(), ollama_client_factory=factory)
+    assert captured == {}
+
+    app.test_client().get("/api/status")
 
     assert captured["base_url"] == "http://ollama:11434"
+
+
+def test_status_ollama_client_uses_the_configured_factory(monkeypatch):
+    captured = []
+
+    def factory(base_url):
+        captured.append(base_url)
+        return FakeOllama()
+
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    app = create_app(
+        gpu_probe=FakeGpuProbe(),
+        ollama_client_factory=factory,
+    )
+    assert captured == []
+
+    response = app.test_client().get("/api/status")
+
+    assert response.status_code == 200
+    assert captured == ["http://host.containers.internal:11434"]
+    assert response.get_json()["ollama"]["available"] is True
+
+
+def test_status_reports_a_rejected_default_ollama_destination(monkeypatch):
+    def factory(base_url):
+        raise HostConfirmationRequired("ollama.example.net", ["203.0.113.20"])
+
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama.example.net:11434")
+    app = create_app(
+        gpu_probe=FakeGpuProbe(),
+        ollama_client_factory=factory,
+    )
+
+    response = app.test_client().get("/api/status")
+
+    assert response.status_code == 200
+    assert response.get_json()["ollama"] == {
+        "available": False,
+        "models": [],
+        "error": "Le domaine « ollama.example.net » doit être confirmé",
+    }
 
 
 def test_ollama_environment_override_is_selected_in_dashboard(monkeypatch):
@@ -98,10 +143,10 @@ def test_dashboard_exposes_ollama_podman_docker_and_custom_urls():
         b'id="ollama-endpoint-preset"',
         b'id="ollama-base-url"',
         b'id="load-ollama-models"',
-        b'http://host.containers.internal:11434',
-        b'http://host.docker.internal:11434',
-        b'http://ollama:11434',
-        b'http://127.0.0.1:11434',
+        b"http://host.containers.internal:11434",
+        b"http://host.docker.internal:11434",
+        b"http://ollama:11434",
+        b"http://127.0.0.1:11434",
     ):
         assert value in response.data
 
@@ -120,8 +165,14 @@ def test_status_combines_gpu_and_ollama_diagnostics():
 
     assert response.status_code == 200
     assert response.get_json() == {
-        "gpu": {"available": True, "devices": [{"id": "card0", "name": "AMD Radeon", "temperature_c": 51}]},
-        "ollama": {"available": True, "models": [{"name": "qwen3:8b", "size": 123, "modified_at": None}]},
+        "gpu": {
+            "available": True,
+            "devices": [{"id": "card0", "name": "AMD Radeon", "temperature_c": 51}],
+        },
+        "ollama": {
+            "available": True,
+            "models": [{"name": "qwen3:8b", "size": 123, "modified_at": None}],
+        },
     }
 
 
@@ -129,7 +180,9 @@ def test_generate_validates_required_fields():
     response = client().post("/api/ollama/generate", json={"model": "qwen3:8b"})
 
     assert response.status_code == 400
-    assert response.get_json() == {"error": "Les champs model et prompt sont obligatoires"}
+    assert response.get_json() == {
+        "error": "Les champs model et prompt sont obligatoires"
+    }
 
 
 def test_generate_returns_ollama_response():
@@ -294,7 +347,9 @@ def test_openai_chat_rejects_out_of_range_temperature():
     )
 
     assert response.status_code == 400
-    assert response.get_json() == {"error": "temperature doit être comprise entre 0 et 2"}
+    assert response.get_json() == {
+        "error": "temperature doit être comprise entre 0 et 2"
+    }
 
 
 def test_openai_models_requires_base_url():
@@ -304,10 +359,18 @@ def test_openai_models_requires_base_url():
     assert response.get_json() == {"error": "Le champ base_url est obligatoire"}
 
 
-@pytest.mark.parametrize("route", ["/api/openai/models", "/api/openai/chat"])
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/api/ollama/models",
+        "/api/ollama/generate",
+        "/api/openai/models",
+        "/api/openai/chat",
+    ],
+)
 @pytest.mark.parametrize("payload", [[], "text", 42, None])
-def test_openai_routes_reject_json_that_is_not_an_object(route, payload):
-    response = openai_client({}).post(route, json=payload)
+def test_api_routes_reject_json_that_is_not_an_object(route, payload):
+    response = client().post(route, json=payload)
 
     assert response.status_code == 400
     assert response.get_json() == {"error": "Le corps JSON doit être un objet"}

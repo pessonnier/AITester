@@ -22,15 +22,17 @@ def test_probe_normalizes_rocm_smi_card_output():
     }
     probe = GpuProbe(runner=lambda *args, **kwargs: completed(payload))
 
-    assert probe.status() == [{
-        "id": "card0",
-        "vendor": "AMD",
-        "name": "AMD Radeon RX 7900 XTX",
-        "utilization_percent": 17.0,
-        "temperature_c": 54.0,
-        "vram_total_bytes": 25_753_026_560,
-        "vram_used_bytes": 8_589_934_592,
-    }]
+    assert probe.status() == [
+        {
+            "id": "card0",
+            "vendor": "AMD",
+            "name": "AMD Radeon RX 7900 XTX",
+            "utilization_percent": 17.0,
+            "temperature_c": 54.0,
+            "vram_total_bytes": 25_753_026_560,
+            "vram_used_bytes": 8_589_934_592,
+        }
+    ]
 
 
 def test_probe_uses_rocm_smi_json_command():
@@ -43,7 +45,15 @@ def test_probe_uses_rocm_smi_json_command():
 
     GpuProbe(runner=runner).status()
 
-    assert captured["command"] == ["rocm-smi", "--showproductname", "--showuse", "--showtemp", "--showmeminfo", "vram", "--json"]
+    assert captured["command"] == [
+        "rocm-smi",
+        "--showproductname",
+        "--showuse",
+        "--showtemp",
+        "--showmeminfo",
+        "vram",
+        "--json",
+    ]
     assert captured["kwargs"] == {
         "capture_output": True,
         "text": True,
@@ -61,7 +71,9 @@ def test_probe_reports_missing_rocm_smi():
 
 
 def test_nvidia_probe_normalizes_csv_output():
-    output = "0, NVIDIA RTX 4090, 28, 49, 24564, 4096\n1, NVIDIA L40S, 3, 41, 46068, 1024\n"
+    output = (
+        "0, NVIDIA RTX 4090, 28, 49, 24564, 4096\n1, NVIDIA L40S, 3, 41, 46068, 1024\n"
+    )
 
     def runner(command, **kwargs):
         return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
@@ -129,4 +141,11 @@ def test_system_probe_reports_all_unavailable_backends():
             raise GpuProbeError(self.message)
 
     with pytest.raises(GpuProbeError, match="rocm-smi.*nvidia-smi"):
-        SystemGpuProbe([Missing("rocm-smi absent"), Missing("nvidia-smi absent")]).status()
+        SystemGpuProbe(
+            [Missing("rocm-smi absent"), Missing("nvidia-smi absent")]
+        ).status()
+
+
+def test_system_probe_accepts_an_explicitly_empty_backend_list():
+    with pytest.raises(GpuProbeError, match="Aucun backend GPU configuré"):
+        SystemGpuProbe([]).status()

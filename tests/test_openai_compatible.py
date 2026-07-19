@@ -34,6 +34,28 @@ def public_resolver(host, port, *, type):
     return [(socket.AF_INET, type, 6, "", ("93.184.216.34", port))]
 
 
+def test_falsey_destination_policy_is_preserved():
+    class Policy:
+        def __bool__(self):
+            return False
+
+        def require_allowed(self, host, addresses):
+            return None
+
+        def add_host(self, host):
+            return host
+
+    policy = Policy()
+
+    client = OpenAIClient(
+        "https://api.example/v1",
+        resolver=public_resolver,
+        destination_policy=policy,
+    )
+
+    assert client.destination_policy is policy
+
+
 def test_list_models_uses_configured_endpoint_and_bearer_key():
     captured = {}
 
@@ -80,9 +102,9 @@ def test_chat_completion_sends_supported_parameters():
     def transport(request, *, timeout):
         captured["url"] = request.full_url
         captured["payload"] = json.loads(request.data)
-        return FakeResponse({
-            "choices": [{"message": {"content": "Configuration valide"}}]
-        })
+        return FakeResponse(
+            {"choices": [{"message": {"content": "Configuration valide"}}]}
+        )
 
     result = OpenAIClient(
         "https://api.openai.com/v1",
@@ -144,9 +166,7 @@ def test_invalid_base_url_is_rejected(base_url):
 )
 def test_base_url_path_rejects_whitespace_and_control_characters(invalid_path):
     with pytest.raises(ValueError, match="URL OpenAI invalide"):
-        OpenAIClient(
-            f"https://api.openai.com{invalid_path}", resolver=public_resolver
-        )
+        OpenAIClient(f"https://api.openai.com{invalid_path}", resolver=public_resolver)
 
 
 @pytest.mark.parametrize("control", ["\r", "\n", "\t", "\x00", "\x7f", "\x85"])
@@ -237,7 +257,11 @@ def test_default_transport_does_not_follow_redirects():
 
     source = ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
     threads = [
-        threading.Thread(target=server.serve_forever, daemon=True)
+        threading.Thread(
+            target=server.serve_forever,
+            kwargs={"poll_interval": 0.01},
+            daemon=True,
+        )
         for server in (source, target)
     ]
     for thread in threads:
@@ -252,6 +276,9 @@ def test_default_transport_does_not_follow_redirects():
         target.shutdown()
         source.server_close()
         target.server_close()
+        for thread in threads:
+            thread.join(timeout=1)
+            assert not thread.is_alive()
 
 
 def test_connection_error_does_not_expose_api_key():
@@ -274,7 +301,11 @@ def test_connection_error_does_not_expose_api_key():
 
 @pytest.mark.parametrize(
     "read_error",
-    [IncompleteRead(b"partial", 10), HTTPException("broken response"), OSError("reset")],
+    [
+        IncompleteRead(b"partial", 10),
+        HTTPException("broken response"),
+        OSError("reset"),
+    ],
 )
 def test_response_read_transport_failures_are_wrapped(read_error):
     class BrokenResponse(FakeResponse):
@@ -287,7 +318,7 @@ def test_response_read_transport_failures_are_wrapped(read_error):
         resolver=public_resolver,
     )
 
-    with pytest.raises((OpenAIConnectionError, OpenAIResponseError)):
+    with pytest.raises(OpenAIConnectionError):
         client.list_models()
 
 

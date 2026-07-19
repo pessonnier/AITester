@@ -6,24 +6,25 @@ import json
 import socket
 import string
 from collections.abc import Callable
+from http.client import HTTPException
 from urllib.error import HTTPError, URLError
+from urllib.request import Request
 from urllib.parse import urlsplit, urlunsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from .destination_policy import DestinationPolicy
+from .destination_policy import DestinationPolicyProtocol
+from .http_transport import (
+    InvalidJsonResponse,
+    NoRedirectHandler,
+    ResponseTooLarge,
+    UnexpectedJsonStructure,
+    open_without_redirects as _open_without_redirects,
+    read_bounded_json_object,
+)
 
 
+_NoRedirectHandler = NoRedirectHandler
 _HEX_DIGITS = frozenset(string.hexdigits)
 MAX_OLLAMA_RESPONSE_BYTES = 10 * 1024 * 1024
-
-
-class _NoRedirectHandler(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
-def _open_without_redirects(request: Request, *, timeout: float):
-    return build_opener(_NoRedirectHandler()).open(request, timeout=timeout)
 
 
 class OllamaError(RuntimeError):
@@ -45,7 +46,7 @@ class OllamaClient:
         *,
         timeout: float = 10.0,
         transport: Callable = _open_without_redirects,
-        destination_policy: DestinationPolicy | None = None,
+        destination_policy: DestinationPolicyProtocol | None = None,
         resolver: Callable = socket.getaddrinfo,
     ) -> None:
         self.base_url = self._validate_base_url(
@@ -58,7 +59,7 @@ class OllamaClient:
     def _validate_base_url(
         base_url: str,
         *,
-        destination_policy: DestinationPolicy | None,
+        destination_policy: DestinationPolicyProtocol | None,
         resolver: Callable,
     ) -> str:
         if not isinstance(base_url, str):
@@ -78,7 +79,10 @@ class OllamaClient:
         ):
             raise ValueError("URL Ollama invalide")
         path = parsed.path
-        if any(character.isspace() or ord(character) < 32 or ord(character) >= 127 for character in path):
+        if any(
+            character.isspace() or ord(character) < 32 or ord(character) >= 127
+            for character in path
+        ):
             raise ValueError("URL Ollama invalide")
         for index, character in enumerate(path):
             if character == "%" and (
@@ -93,14 +97,18 @@ class OllamaClient:
             try:
                 addresses = resolver(host, effective_port, type=socket.SOCK_STREAM)
             except (OSError, socket.gaierror) as exc:
-                raise ValueError(f"Résolution impossible pour l’hôte Ollama « {host} »") from exc
+                raise ValueError(
+                    f"Résolution impossible pour l’hôte Ollama « {host} »"
+                ) from exc
             if not addresses:
                 raise ValueError(f"Résolution impossible pour l’hôte Ollama « {host} »")
             destination_policy.require_allowed(
                 host, [address[4][0] for address in addresses]
             )
         normalized_path = path.rstrip("/")
-        return urlunsplit((parsed.scheme, parsed.netloc.lower(), normalized_path, "", ""))
+        return urlunsplit(
+            (parsed.scheme, parsed.netloc.lower(), normalized_path, "", "")
+        )
 
     def _request(self, path: str, payload: dict | None = None) -> dict:
         data = json.dumps(payload).encode() if payload is not None else None
@@ -111,29 +119,21 @@ class OllamaClient:
         )
         try:
             with self._transport(request, timeout=self.timeout) as response:
-                content_length = getattr(response, "getheader", lambda _name: None)(
-                    "Content-Length"
+                body = read_bounded_json_object(
+                    response, max_bytes=MAX_OLLAMA_RESPONSE_BYTES
                 )
-                try:
-                    declared_length = int(content_length) if content_length is not None else None
-                except (TypeError, ValueError):
-                    declared_length = None
-                if declared_length is not None and declared_length > MAX_OLLAMA_RESPONSE_BYTES:
-                    raise OllamaResponseError("Réponse Ollama trop volumineuse")
-                raw_body = response.read(MAX_OLLAMA_RESPONSE_BYTES + 1)
-                if len(raw_body) > MAX_OLLAMA_RESPONSE_BYTES:
-                    raise OllamaResponseError("Réponse Ollama trop volumineuse")
-                body = json.loads(raw_body)
         except HTTPError as exc:
             raise OllamaResponseError(f"Ollama a répondu HTTP {exc.code}") from exc
-        except OllamaResponseError:
-            raise
-        except (URLError, TimeoutError, ConnectionError) as exc:
-            raise OllamaConnectionError(f"Ollama inaccessible à {self.base_url}: {exc}") from exc
-        except (json.JSONDecodeError, UnicodeDecodeError, TypeError) as exc:
+        except ResponseTooLarge as exc:
+            raise OllamaResponseError("Réponse Ollama trop volumineuse") from exc
+        except UnexpectedJsonStructure as exc:
+            raise OllamaResponseError("Réponse Ollama inattendue") from exc
+        except InvalidJsonResponse as exc:
             raise OllamaResponseError("Réponse JSON Ollama invalide") from exc
-        if not isinstance(body, dict):
-            raise OllamaResponseError("Réponse Ollama inattendue")
+        except (URLError, HTTPException, OSError) as exc:
+            raise OllamaConnectionError(
+                f"Ollama inaccessible à {self.base_url}: {exc}"
+            ) from exc
         return body
 
     def list_models(self) -> list[dict]:

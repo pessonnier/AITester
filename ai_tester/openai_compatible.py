@@ -11,9 +11,16 @@ from collections.abc import Callable, Iterable
 from http.client import HTTPException
 from urllib.error import HTTPError, URLError
 from urllib.parse import SplitResult, urlsplit, urlunsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import Request
 
-from .destination_policy import DestinationPolicy
+from .destination_policy import DestinationPolicy, DestinationPolicyProtocol
+from .http_transport import (
+    InvalidJsonResponse,
+    ResponseTooLarge,
+    UnexpectedJsonStructure,
+    open_without_redirects as _open_without_redirects,
+    read_bounded_json_object,
+)
 
 
 MAX_OPENAI_RESPONSE_BYTES = 10 * 1024 * 1024
@@ -30,15 +37,6 @@ class OpenAIConnectionError(OpenAIError):
 
 class OpenAIResponseError(OpenAIError):
     """Raised when the configured API returns an invalid response."""
-
-
-class _NoRedirectHandler(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
-def _open_without_redirects(request: Request, *, timeout: float):
-    return build_opener(_NoRedirectHandler()).open(request, timeout=timeout)
 
 
 def _environment_allowed_hosts() -> set[str]:
@@ -60,10 +58,12 @@ class OpenAIClient:
         transport: Callable | None = None,
         allowed_hosts: Iterable[str] | None = None,
         resolver: Callable = socket.getaddrinfo,
-        destination_policy: DestinationPolicy | None = None,
+        destination_policy: DestinationPolicyProtocol | None = None,
     ) -> None:
         self._validate_api_key(api_key)
-        self.destination_policy = destination_policy or DestinationPolicy()
+        self.destination_policy = (
+            DestinationPolicy() if destination_policy is None else destination_policy
+        )
         self._base = self._validate_base_url(
             base_url,
             api_key=api_key,
@@ -81,11 +81,15 @@ class OpenAIClient:
         if not isinstance(api_key, str) or any(
             unicodedata.category(character) == "Cc" for character in api_key
         ):
-            raise ValueError("Clé API OpenAI invalide : caractères de contrôle interdits")
+            raise ValueError(
+                "Clé API OpenAI invalide : caractères de contrôle interdits"
+            )
         try:
             api_key.encode("latin-1")
         except UnicodeEncodeError as exc:
-            raise ValueError("Clé API OpenAI invalide : caractères non pris en charge") from exc
+            raise ValueError(
+                "Clé API OpenAI invalide : caractères non pris en charge"
+            ) from exc
 
     @staticmethod
     def _validate_base_url(
@@ -94,7 +98,7 @@ class OpenAIClient:
         api_key: str,
         allowed_hosts: Iterable[str] | None,
         resolver: Callable,
-        destination_policy: DestinationPolicy,
+        destination_policy: DestinationPolicyProtocol,
     ) -> SplitResult:
         if not isinstance(base_url, str):
             raise ValueError("URL OpenAI invalide : utilisez une URL HTTP ou HTTPS")
@@ -127,7 +131,9 @@ class OpenAIClient:
         try:
             parsed.path.encode("ascii")
         except UnicodeEncodeError as exc:
-            raise ValueError("URL OpenAI invalide : le chemin doit être encodé") from exc
+            raise ValueError(
+                "URL OpenAI invalide : le chemin doit être encodé"
+            ) from exc
         for index, character in enumerate(parsed.path):
             if character == "%" and (
                 index + 2 >= len(parsed.path)
@@ -148,7 +154,9 @@ class OpenAIClient:
         try:
             addresses = resolver(host, effective_port, type=socket.SOCK_STREAM)
         except OSError as exc:
-            raise ValueError(f"Résolution impossible pour l’hôte OpenAI « {host} »") from exc
+            raise ValueError(
+                f"Résolution impossible pour l’hôte OpenAI « {host} »"
+            ) from exc
         if not addresses:
             raise ValueError(f"Résolution impossible pour l’hôte OpenAI « {host} »")
         if host not in explicit_hosts:
@@ -174,32 +182,23 @@ class OpenAIClient:
         request = Request(self._endpoint(path), data=data, headers=headers)
         try:
             with self._transport(request, timeout=self.timeout) as response:
-                content_length = getattr(response, "headers", {}).get("Content-Length")
-                try:
-                    declared_length = int(content_length) if content_length is not None else None
-                except (TypeError, ValueError):
-                    declared_length = None
-                if (
-                    declared_length is not None
-                    and declared_length > MAX_OPENAI_RESPONSE_BYTES
-                ):
-                    raise OpenAIResponseError("Réponse OpenAI trop volumineuse")
-                raw_body = response.read(MAX_OPENAI_RESPONSE_BYTES + 1)
-                if len(raw_body) > MAX_OPENAI_RESPONSE_BYTES:
-                    raise OpenAIResponseError("Réponse OpenAI trop volumineuse")
-                body = json.loads(raw_body)
+                body = read_bounded_json_object(
+                    response, max_bytes=MAX_OPENAI_RESPONSE_BYTES
+                )
         except HTTPError as exc:
-            raise OpenAIResponseError(f"L’API OpenAI a répondu HTTP {exc.code}") from exc
-        except OpenAIResponseError:
-            raise
+            raise OpenAIResponseError(
+                f"L’API OpenAI a répondu HTTP {exc.code}"
+            ) from exc
+        except ResponseTooLarge as exc:
+            raise OpenAIResponseError("Réponse OpenAI trop volumineuse") from exc
+        except UnexpectedJsonStructure as exc:
+            raise OpenAIResponseError("Structure de réponse OpenAI invalide") from exc
+        except InvalidJsonResponse as exc:
+            raise OpenAIResponseError("Réponse JSON OpenAI invalide") from exc
         except (URLError, HTTPException, OSError) as exc:
             raise OpenAIConnectionError(
                 f"API OpenAI inaccessible à {self.base_url}: {exc}"
             ) from exc
-        except (json.JSONDecodeError, UnicodeDecodeError, TypeError) as exc:
-            raise OpenAIResponseError("Réponse JSON OpenAI invalide") from exc
-        if not isinstance(body, dict):
-            raise OpenAIResponseError("Structure de réponse OpenAI invalide")
         return body
 
     def list_models(self) -> list[str]:

@@ -57,7 +57,10 @@ def test_invalid_ollama_url_is_rejected(tmp_path):
 def test_ollama_redirects_are_disabled():
     handler = _NoRedirectHandler()
 
-    assert handler.redirect_request(None, None, 302, "Found", {}, "http://169.254.169.254") is None
+    assert (
+        handler.redirect_request(None, None, 302, "Found", {}, "http://169.254.169.254")
+        is None
+    )
 
 
 def test_oversized_ollama_response_is_rejected():
@@ -75,19 +78,27 @@ def test_list_models_returns_normalized_models():
     def transport(request, *, timeout):
         assert request.full_url == "http://ollama:11434/api/tags"
         assert timeout == 2.5
-        return FakeResponse({
-            "models": [
-                {"name": "qwen3:8b", "size": 5_000, "modified_at": "2026-07-01T12:00:00Z"}
-            ]
-        })
+        return FakeResponse(
+            {
+                "models": [
+                    {
+                        "name": "qwen3:8b",
+                        "size": 5_000,
+                        "modified_at": "2026-07-01T12:00:00Z",
+                    }
+                ]
+            }
+        )
 
     client = OllamaClient("http://ollama:11434/", timeout=2.5, transport=transport)
 
-    assert client.list_models() == [{
-        "name": "qwen3:8b",
-        "size": 5_000,
-        "modified_at": "2026-07-01T12:00:00Z",
-    }]
+    assert client.list_models() == [
+        {
+            "name": "qwen3:8b",
+            "size": 5_000,
+            "modified_at": "2026-07-01T12:00:00Z",
+        }
+    ]
 
 
 def test_list_models_reports_connection_failure():
@@ -95,6 +106,20 @@ def test_list_models_reports_connection_failure():
         raise URLError("connection refused")
 
     client = OllamaClient("http://ollama:11434", transport=failing_transport)
+
+    with pytest.raises(OllamaConnectionError, match="Ollama inaccessible"):
+        client.list_models()
+
+
+def test_response_read_failures_are_wrapped_as_connection_errors():
+    class BrokenResponse(FakeResponse):
+        def read(self, _limit=None):
+            raise OSError("connection reset")
+
+    client = OllamaClient(
+        "http://ollama:11434",
+        transport=lambda request, timeout: BrokenResponse({}),
+    )
 
     with pytest.raises(OllamaConnectionError, match="Ollama inaccessible"):
         client.list_models()

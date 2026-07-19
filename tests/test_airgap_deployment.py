@@ -1,9 +1,10 @@
-from pathlib import Path
 import hashlib
 import os
 import shutil
 import subprocess
 import tarfile
+from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
@@ -22,20 +23,42 @@ def read(relative_path: str) -> str:
     return (ROOT / relative_path).read_text()
 
 
-def write_test_bundle(directory: Path, manifest_text: str = TEST_MANIFEST) -> Path:
-    installer = directory / "install.sh"
-    shutil.copy2(ROOT / "deploy/airgap/install.sh", installer)
-    installer.chmod(0o755)
-    image = directory / "ai-tester-image.tar"
-    image.write_bytes(b"offline-image")
-    manifest = directory / "MANIFEST"
-    manifest.write_text(manifest_text)
-    checksums = []
-    for path in (image, manifest, installer):
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        checksums.append(f"{digest}  {path.name}\n")
-    (directory / "SHA256SUMS").write_text("".join(checksums))
-    return installer
+@dataclass(frozen=True)
+class BundleFixture:
+    directory: Path
+    installer: Path
+    image: Path
+    manifest: Path
+    checksums: Path
+
+    def rewrite_checksums(self) -> None:
+        lines = []
+        for path in (self.image, self.manifest, self.installer):
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            lines.append(f"{digest}  {path.name}\n")
+        self.checksums.write_text("".join(lines))
+
+
+def write_test_bundle(
+    directory: Path,
+    manifest_text: str = TEST_MANIFEST,
+    *,
+    image_bytes: bytes = b"offline-image",
+) -> BundleFixture:
+    directory.mkdir(parents=True, exist_ok=True)
+    bundle = BundleFixture(
+        directory=directory,
+        installer=directory / "install.sh",
+        image=directory / "ai-tester-image.tar",
+        manifest=directory / "MANIFEST",
+        checksums=directory / "SHA256SUMS",
+    )
+    shutil.copy2(ROOT / "deploy/airgap/install.sh", bundle.installer)
+    bundle.installer.chmod(0o755)
+    bundle.image.write_bytes(image_bytes)
+    bundle.manifest.write_text(manifest_text)
+    bundle.rewrite_checksums()
+    return bundle
 
 
 def test_container_image_is_non_root_and_uses_production_server():
@@ -43,7 +66,10 @@ def test_container_image_is_non_root_and_uses_production_server():
 
     assert "USER ai-tester" in containerfile
     assert "waitress-serve" in containerfile
-    assert "AI_TESTER_ALLOWED_DESTINATIONS=/data/allowed_destinations.json" in containerfile
+    assert (
+        "AI_TESTER_ALLOWED_DESTINATIONS=/data/allowed_destinations.json"
+        in containerfile
+    )
     assert "OLLAMA_BASE_URL=http://host.containers.internal:11434" in containerfile
     assert "HEALTHCHECK" in containerfile
     assert "@sha256:" in containerfile
@@ -201,7 +227,6 @@ def test_offline_installer_rejects_unknown_gpu_mode_before_runtime(tmp_path):
             "https://ollama.example.com/models/@latest/%41",
             "none",
         ),
-
         (
             "podman",
             "http://host.containers.internal:11434",
@@ -216,7 +241,6 @@ def test_offline_installer_rejects_unknown_gpu_mode_before_runtime(tmp_path):
             None,
             "nvidia",
         ),
-
     ],
 )
 def test_offline_installer_loads_and_starts_without_network(
@@ -227,28 +251,15 @@ def test_offline_installer_loads_and_starts_without_network(
     configured_url,
     gpu_mode,
 ):
-    bundle = tmp_path / "bundle"
-    bundle.mkdir()
-    installer = bundle / "install.sh"
-    shutil.copy2(ROOT / "deploy/airgap/install.sh", installer)
-    installer.chmod(0o755)
-    image = bundle / "ai-tester-image.tar"
-    image.write_bytes(b"offline-image")
-    manifest = bundle / "MANIFEST"
-    manifest.write_text(TEST_MANIFEST)
-
-    checksum_lines = []
-    for path in (image, manifest, installer):
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        checksum_lines.append(f"{digest}  {path.name}\n")
-    (bundle / "SHA256SUMS").write_text("".join(checksum_lines))
+    bundle = write_test_bundle(tmp_path / "bundle")
+    installer = bundle.installer
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     fake_runtime = fake_bin / runtime
     fake_runtime.write_text(
         "#!/usr/bin/env bash\n"
-        "printf '%s\\n' \"$*\" >> \"$FAKE_RUNTIME_LOG\"\n"
+        'printf \'%s\\n\' "$*" >> "$FAKE_RUNTIME_LOG"\n'
         "[[ $1 == info ]] && printf '{\"nvidia\":{}}\\n' && exit 0\n"
         f"[[ $1 == image && $2 == inspect ]] && printf '{TEST_IMAGE_ID}\\n' && exit 0\n"
         "[[ $1 == container && $2 == inspect ]] && exit 1\n"
@@ -277,7 +288,7 @@ def test_offline_installer_loads_and_starts_without_network(
         command.extend(("--ollama-url", configured_url))
     result = subprocess.run(
         command,
-        cwd=bundle,
+        cwd=bundle.directory,
         env=environment,
         capture_output=True,
         text=True,
@@ -417,10 +428,10 @@ def test_connected_builder_rejects_architecture_label_mismatch(tmp_path):
 
 def test_offline_installer_rejects_bundle_for_another_architecture(tmp_path):
     wrong_arch_manifest = TEST_MANIFEST.replace("ARCH=x86_64", "ARCH=aarch64")
-    installer = write_test_bundle(tmp_path, wrong_arch_manifest)
+    bundle = write_test_bundle(tmp_path, wrong_arch_manifest)
 
     result = subprocess.run(
-        [str(installer), "--no-start"],
+        [str(bundle.installer), "--no-start"],
         cwd=tmp_path,
         capture_output=True,
         text=True,
@@ -432,14 +443,14 @@ def test_offline_installer_rejects_bundle_for_another_architecture(tmp_path):
 
 
 def test_preflight_failure_preserves_existing_container(tmp_path):
-    installer = write_test_bundle(tmp_path)
+    bundle = write_test_bundle(tmp_path)
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     runtime_log = tmp_path / "runtime.log"
     fake_runtime = fake_bin / "podman"
     fake_runtime.write_text(
         "#!/usr/bin/env bash\n"
-        "printf '%s\\n' \"$*\" >> \"$FAKE_RUNTIME_LOG\"\n"
+        'printf \'%s\\n\' "$*" >> "$FAKE_RUNTIME_LOG"\n'
         "[[ $1 == container && $2 == inspect ]] && exit 0\n"
         f"[[ $1 == image && $2 == inspect ]] && printf '{TEST_IMAGE_ID}\\n' && exit 0\n"
         "[[ $1 == create ]] && exit 42\n"
@@ -448,7 +459,7 @@ def test_preflight_failure_preserves_existing_container(tmp_path):
     fake_runtime.chmod(0o755)
 
     result = subprocess.run(
-        [str(installer), "--runtime", "podman", "--gpu", "none", "--replace"],
+        [str(bundle.installer), "--runtime", "podman", "--gpu", "none", "--replace"],
         cwd=tmp_path,
         env=os.environ
         | {
@@ -468,22 +479,11 @@ def test_preflight_failure_preserves_existing_container(tmp_path):
 
 
 def test_offline_installer_rejects_tampered_image_before_runtime(tmp_path):
-    installer = tmp_path / "install.sh"
-    shutil.copy2(ROOT / "deploy/airgap/install.sh", installer)
-    installer.chmod(0o755)
-    image = tmp_path / "ai-tester-image.tar"
-    image.write_bytes(b"expected-image")
-    manifest = tmp_path / "MANIFEST"
-    manifest.write_text(TEST_MANIFEST)
-    checksum_lines = []
-    for path in (image, manifest, installer):
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        checksum_lines.append(f"{digest}  {path.name}\n")
-    (tmp_path / "SHA256SUMS").write_text("".join(checksum_lines))
-    image.write_bytes(b"tampered-image")
+    bundle = write_test_bundle(tmp_path, image_bytes=b"expected-image")
+    bundle.image.write_bytes(b"tampered-image")
 
     result = subprocess.run(
-        [str(installer), "--no-start"],
+        [str(bundle.installer), "--no-start"],
         cwd=tmp_path,
         capture_output=True,
         text=True,
@@ -515,27 +515,14 @@ def test_offline_installer_rejects_tampered_image_before_runtime(tmp_path):
     ],
 )
 def test_invalid_ollama_url_cannot_remove_existing_container(tmp_path, invalid_url):
-    installer = tmp_path / "install.sh"
-    shutil.copy2(ROOT / "deploy/airgap/install.sh", installer)
-    installer.chmod(0o755)
-    image = tmp_path / "ai-tester-image.tar"
-    image.write_bytes(b"offline-image")
-    manifest = tmp_path / "MANIFEST"
-    manifest.write_text(TEST_MANIFEST)
-    checksum_lines = []
-    for path in (image, manifest, installer):
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        checksum_lines.append(f"{digest}  {path.name}\n")
-    (tmp_path / "SHA256SUMS").write_text("".join(checksum_lines))
+    bundle = write_test_bundle(tmp_path)
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     fake_runtime = fake_bin / "podman"
     runtime_log = tmp_path / "runtime.log"
     fake_runtime.write_text(
-        "#!/usr/bin/env bash\n"
-        "printf '%s\\n' \"$*\" >> \"$FAKE_RUNTIME_LOG\"\n"
-        "exit 0\n"
+        '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$FAKE_RUNTIME_LOG"\nexit 0\n'
     )
     fake_runtime.chmod(0o755)
     environment = os.environ | {
@@ -545,7 +532,7 @@ def test_invalid_ollama_url_cannot_remove_existing_container(tmp_path, invalid_u
     }
 
     result = subprocess.run(
-        [str(installer), "--replace", "--ollama-url", invalid_url],
+        [str(bundle.installer), "--replace", "--ollama-url", invalid_url],
         cwd=tmp_path,
         env=environment,
         capture_output=True,
