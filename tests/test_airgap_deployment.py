@@ -179,6 +179,26 @@ def test_readme_documents_air_gapped_deployment():
     assert "SHA256SUMS" in readme
     assert "install.sh" in readme
     assert "aucun accès Internet" in readme
+    assert "ne prouve pas son authenticité" in readme
+    assert "### Vérifications après installation" in readme
+    assert "ReadonlyRootfs" in readme
+    assert "NAME=ai-tester" in readme
+    assert "PORT=5000" in readme
+    assert "BIND_ADDRESS=127.0.0.1" in readme
+    assert '$RUNTIME exec "$NAME"' in readme
+    assert "### Retour arrière contrôlé" in readme
+    assert "n’effectue pas de retour arrière automatique" in readme
+    assert "ne prévalide ni le nom définitif ni la publication du port" in readme
+    assert "`COMMON_ARGS` et `GPU_ARGS`" in readme
+    assert "OLLAMA_URL=http://host.containers.internal:11434" in readme
+    assert "OLLAMA_URL=http://host.docker.internal:11434" in readme
+    assert '--runtime "$RUNTIME"' in readme
+    assert '--name "$NAME"' in readme
+    assert '--port "$PORT"' in readme
+    assert '--bind-address "$BIND_ADDRESS"' in readme
+    assert '--ollama-url "$OLLAMA_URL"' in readme
+    assert '--gpu "$GPU_MODE"' in readme
+    assert '"http://${CHECK_ADDRESS}:${PORT}/"' in readme
     assert "### Accès GPU AMD" in readme
     assert "### Accès GPU NVIDIA" in readme
     assert "--gpu amd" in readme

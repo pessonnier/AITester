@@ -144,6 +144,20 @@ CONTAINER_RUNTIME=podman \
 
 `GPU_BASE_IMAGE` doit obligatoirement être épinglée par digest SHA-256 et fournir Python 3, `pip`, `useradd`, `/usr/sbin/nologin` et un `/opt/rocm/bin/rocm-smi` exécutable — ce dernier point est vérifié pendant le build. La base officielle par défaut fournit ROCm 7.2.4 via `rocm/dev-ubuntu-24.04:7.2.4`, épinglée par digest. Une base personnalisée relève de l’organisation et doit être qualifiée avec la version du pilote hôte. Le manifeste enregistre la référence de base, l’identifiant de l’image construite, le commit source, l’architecture inspectée et le hash du verrou de dépendances.
 
+#### Intégrité, authenticité et conservation des preuves
+
+Le fichier `.sha256` protège l’intégrité de l’archive externe pendant le transfert. Après extraction, `SHA256SUMS` protège l’image, le manifeste, l’installateur et le verrou de dépendances avant leur utilisation. Un checksum reçu avec l’archive détecte une corruption, mais **ne prouve pas son authenticité** face à un attaquant capable de remplacer simultanément l’archive et son checksum.
+
+Pour une livraison contrôlée :
+
+- construire depuis un commit Git revu et signé, avec une arborescence propre ;
+- conserver ensemble le bundle, le fichier `.sha256`, le commit source et le journal de construction ;
+- publier le checksum par un canal de confiance distinct ou signer l’archive avec le mécanisme approuvé par l’organisation ;
+- vérifier la signature ou comparer le checksum approuvé **avant** toute extraction dans la zone isolée ;
+- archiver aussi le bundle précédemment qualifié pour permettre un retour arrière.
+
+`ALLOW_DIRTY=1` et `ALLOW_UNVERSIONED=1` sont des dérogations de développement. Un bundle produit avec l’une de ces options ne doit pas être promu en production sans procédure d’acceptation explicite.
+
 ### 2. Transférer et installer dans la zone isolée
 
 Prérequis sur la cible : Linux x86_64, Bash, `tar`, `sha256sum` et Podman ou Docker déjà installés. Python, `uv` et un registre de conteneurs ne sont pas nécessaires sur la cible. Les pilotes GPU et, pour NVIDIA, le NVIDIA Container Toolkit doivent être préinstallés hors ligne sur l’hôte.
@@ -154,8 +168,12 @@ Copier le bundle et son fichier `.sha256` par le canal autorisé. Si le modèle 
 sha256sum -c ai-tester-airgap-0.1.0-x86_64.tar.gz.sha256
 tar -xzf ai-tester-airgap-0.1.0-x86_64.tar.gz
 cd ai-tester-airgap
+sha256sum -c SHA256SUMS
+cat MANIFEST
 ./install.sh
 ```
+
+La première vérification porte sur l’archive reçue ; la seconde contrôle chaque composant extrait. Examiner ensuite `MANIFEST` et comparer au dossier de livraison approuvé au minimum `SOURCE_COMMIT`, `SOURCE_DIRTY`, `GPU_BASE_IMAGE`, `LOCK_SHA256`, `IMAGE_ID` et `ARCH`. Ne jamais exécuter `source MANIFEST` : ce fichier est une donnée de provenance, pas un script shell. L’installateur répète la vérification interne et valide les champs qu’il consomme.
 
 L’installateur :
 
@@ -191,6 +209,74 @@ Options utiles :
 ```
 
 Sans `--replace`, l’installateur refuse de supprimer un conteneur existant. Conserver le bundle précédent pour un retour arrière ; un remplacement provoque une brève interruption de service.
+
+### Vérifications après installation
+
+Conserver dans le dossier d’intervention le moteur, le mode GPU, l’URL Ollama, l’adresse d’écoute, le port et le nom de conteneur utilisés. Vérifier ensuite le service depuis l’hôte :
+
+```bash
+RUNTIME=podman                  # ou docker
+NAME=ai-tester                  # valeur passée à --name
+PORT=5000                       # valeur passée à --port
+BIND_ADDRESS=127.0.0.1          # valeur passée à --bind-address
+
+$RUNTIME ps --filter "name=${NAME}"
+$RUNTIME exec "$NAME" python3 -c \
+  "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/', timeout=3).read(1)"
+$RUNTIME logs --tail 50 "$NAME"
+```
+
+Si `curl` est disponible sur l’hôte, vérifier aussi l’adresse réellement publiée :
+
+```bash
+CHECK_ADDRESS=$BIND_ADDRESS      # utiliser une adresse concrète de l’hôte si 0.0.0.0
+curl --fail --show-error "http://${CHECK_ADDRESS}:${PORT}/"
+```
+
+Contrôler les options de moindre privilège appliquées au conteneur :
+
+```bash
+$RUNTIME inspect --format \
+  'read_only={{.HostConfig.ReadonlyRootfs}} privileged={{.HostConfig.Privileged}} cap_drop={{json .HostConfig.CapDrop}} security_opt={{json .HostConfig.SecurityOpt}}' \
+  "$NAME"
+$RUNTIME volume inspect ai-tester-data
+```
+
+Le résultat attendu comprend `read_only=true`, `privileged=false`, `ALL` dans `cap_drop` et `no-new-privileges` dans `security_opt`. Vérifier également que le port reste lié à `127.0.0.1`, sauf exposition explicitement approuvée derrière un reverse proxy authentifiant et TLS. Pour un mode GPU, exécuter ensuite la commande matérielle correspondant au fournisseur comme indiqué plus bas ; un état HTTP sain ne valide pas à lui seul l’accès au GPU.
+
+### Retour arrière contrôlé
+
+La prévalidation protège le conteneur existant pendant le contrôle des options communes, GPU et de durcissement. Concrètement, le `create` de prévalidation transmet uniquement les tableaux `COMMON_ARGS` et `GPU_ARGS` du script. Elle **ne prévalide ni le nom définitif ni la publication du port**, qui ne sont appliqués qu’après suppression du conteneur à remplacer. Vérifier donc auparavant que le nom et le port choisis sont disponibles. Après suppression de l’ancien conteneur, l’installateur **n’effectue pas de retour arrière automatique** si la création, le démarrage ou le contrôle de disponibilité du nouveau conteneur échoue.
+
+Avant une mise à niveau, conserver le bundle précédent avec son checksum, son manifeste et les options exactes d’installation. Pour revenir à la version qualifiée précédente :
+
+```bash
+NAME=ai-tester                  # reprendre la valeur enregistrée
+PORT=5000                       # reprendre la valeur enregistrée
+BIND_ADDRESS=127.0.0.1          # reprendre la valeur enregistrée
+GPU_MODE=none                   # reprendre none, auto, amd, nvidia ou all
+
+# Paire par défaut pour Podman :
+RUNTIME=podman
+OLLAMA_URL=http://host.containers.internal:11434
+
+# Paire par défaut pour Docker (décommenter ensemble si Docker était utilisé) :
+# RUNTIME=docker
+# OLLAMA_URL=http://host.docker.internal:11434
+
+cd /chemin/vers/le-bundle-precedent/ai-tester-airgap
+sha256sum -c SHA256SUMS
+./install.sh \
+  --runtime "$RUNTIME" \
+  --name "$NAME" \
+  --port "$PORT" \
+  --bind-address "$BIND_ADDRESS" \
+  --ollama-url "$OLLAMA_URL" \
+  --gpu "$GPU_MODE" \
+  --replace
+```
+
+Réutiliser le même `--name`, `--port`, `--bind-address`, `--ollama-url` et mode `--gpu` que lors de l’installation précédente. Le volume nommé `ai-tester-data` est conservé et réutilisé ; ne pas le supprimer pendant le retour arrière. L’archive précédente est rechargée, puis son `IMAGE_ID` est comparé à son manifeste avant remplacement. Réexécuter enfin toutes les vérifications post-installation. Si une évolution de format des données persistantes est introduite ultérieurement, elle devra fournir une procédure de sauvegarde et de restauration distincte avant déploiement.
 
 L’image GPU est distribuée uniquement pour **x86_64/amd64**, car la base ROCm officielle utilisée n’est pas multi-architecture. Il faut produire et qualifier une autre image de base avant tout support ARM64.
 
